@@ -3,3 +3,4 @@ ogosense_bot/.DS_Store
 /ogosense_bot/ogosense_2025/build
 ogosense_bot/ogosense_2025/ogosense.h
 *.h
+ogosense_bot/emqxsl-ca.crt

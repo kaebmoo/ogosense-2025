@@ -31,6 +31,7 @@ SOFTWARE.
 #include <ArduinoJson.h>
 #include <PubSubClient.h>
 #include <time.h>
+#include <Ticker.h>
 #include "ogosense_esp32.h"
 
 #include <EEPROM.h>
@@ -44,6 +45,8 @@ SOFTWARE.
 #define EEPROM_ADDR_CHATID_4   16  // 4 bytes (เพิ่มเติมได้)
 #define EEPROM_ADDR_NUM_CHATS  20  // 1 byte (จำนวน chat ids)
 
+#define LED_PIN 2  // GPIO2 เป็น LED บนบอร์ด ESP32 บางรุ่น
+
 
 WiFiClientSecure telegramClient;
 UniversalTelegramBot bot(BOT_TOKEN, telegramClient);
@@ -56,6 +59,7 @@ PubSubClient mqtt(mqttClient);
 unsigned long bot_lasttime;
 const unsigned long BOT_MTBS = 1000;           // 1 วินาทีต่อครั้ง
 
+Ticker blinker;
 
 // ฟังก์ชันประกาศล่วงหน้า
 void connectToWiFi();
@@ -66,10 +70,13 @@ void mqttCallback(char *topic, byte *payload, unsigned int length);
 void handleNewMessages(int numNewMessages);
 bool isNumeric(const String& str);
 
-// รายการคำสั่งที่รองรับ
+// รายการคำสั่งที่รองรับ - ปรับปรุงให้แสดงรายละเอียดที่ชัดเจนขึ้น
 const String HELP_MESSAGE = 
 "Available Commands (คำสั่งที่สามารถใช้ได้):\n"
 "/start - เริ่มต้นใช้งานอุปกรณ์\n"
+"/help - แสดงรายการคำสั่งทั้งหมด\n\n"
+
+"คำสั่งสำหรับควบคุมอุปกรณ์ ESP8266:\n"
 "/status <id> - ตรวจสอบสถานะอุปกรณ์\n"
 "/settemp <id> <lowTemp> <highTemp> - ตั้งค่าขอบเขต Temperature\n"
 "/sethum <id> <lowHumidity> <highHumidity> - ตั้งค่าขอบเขต Humidity\n"
@@ -80,15 +87,23 @@ const String HELP_MESSAGE =
 "/setchannel <id> <channel_id> - ตั้งค่า ThingSpeak Channel ID\n"
 "/setwritekey <id> <api_key> - ตั้งค่า ThingSpeak Write API Key\n"
 "/setreadkey <id> <api_key> - ตั้งค่า ThingSpeak Read API Key\n"
-"/addchatid <id> <chat_id> - เพิ่ม Chat ID\n"
-"/removechatid <id> <index(3-5)> <chat_id> - ลบ Chat ID ที่ระบุ\n"
-"/updatechatid <id> <index(3-5)> <old_id> <new_id> - แก้ไข Chat ID\n"
-"/info <id> <secret> - แสดงข้อมูลอุปกรณ์ (Device Info)\n"
-"/help <id> - แสดงรายการคำสั่งทั้งหมด";
+"/info <id> <secret> - แสดงข้อมูลอุปกรณ์ (Device Info)\n\n"
+
+"คำสั่งสำหรับจัดการ ESP32 MQTT Bridge (ต้องใช้ Device ID ของ ESP32):\n"
+"/addchatid <esp32_id> <chat_id> - เพิ่ม Chat ID\n"
+"/removechatid <esp32_id> <index(3-5)> <old_id> - ลบ Chat ID ตามตำแหน่ง\n"
+"/updatechatid <esp32_id> <index(3-5)> <old_id> <new_id> - แก้ไข Chat ID\n"
+"/listchatids <esp32_id> - แสดงรายการ Chat IDs ทั้งหมด\n\n"
+
+"หมายเหตุ: <id> คือ Device ID ของอุปกรณ์ ESP8266\n"
+"<esp32_id> คือ Device ID ของอุปกรณ์ ESP32 MQTT Bridge";
 
 void setup() {
   Serial.begin(115200);
   delay(100);
+  
+  pinMode(LED_PIN, OUTPUT);
+
   Serial.println();
   Serial.println("เริ่มต้นระบบ ESP32 Telegram MQTT Bridge");
 
@@ -114,6 +129,7 @@ void setup() {
   
 
   bot_lasttime = millis();
+  blinker.attach(1.0, blink);  // เรียก blink() ทุก 1 วินาที
 }
 
 void loop() {
@@ -270,6 +286,15 @@ bool isNumeric(const String& str) {
   return true;
 }
 
+// เพิ่มฟังก์ชันสำหรับตรวจสอบ Device ID ของ ESP32
+bool checkDeviceId(const String& inputDeviceId) {
+  // แปลง DEVICE_ID (จากไฟล์ ogosense_esp32.h) เป็นข้อความ
+  String espDeviceId = String(DEVICE_ID);
+  
+  // ตรวจสอบว่า Device ID ที่ระบุตรงกับ Device ID ของ ESP32 หรือไม่
+  return (inputDeviceId == espDeviceId);
+}
+
 void handleNewMessages(int numNewMessages) {
   for (int i = 0; i < numNewMessages; i++) {
     String chat_id = String(bot.messages[i].chat_id);
@@ -296,8 +321,14 @@ void handleNewMessages(int numNewMessages) {
     if (text == "/start") {
       String welcome = "ยินดีต้อนรับสู่ Telegram MQTT Bridge\n";
       welcome += "คุณสามารถใช้คำสั่งต่างๆ เพื่อควบคุมอุปกรณ์ได้\n";
-      welcome += "พิมพ์ /help <id> เพื่อดูรายการคำสั่งทั้งหมด";
+      welcome += "พิมพ์ /help เพื่อดูรายการคำสั่งทั้งหมด";
       bot.sendMessage(chat_id, welcome, "");
+      continue;
+    }
+
+    // ถ้ามีแค่คำสั่ง /help โดยไม่มีพารามิเตอร์
+    if (text == "/help") {
+      bot.sendMessage(chat_id, HELP_MESSAGE, "");
       continue;
     }
 
@@ -673,11 +704,55 @@ void handleNewMessages(int numNewMessages) {
         Serial.println("ส่งคำสั่งไปยัง MQTT ล้มเหลว");
       }
     }
+
+    // ---------- คำสั่ง /info ----------
+    else if (text.startsWith("/info")) {
+      if (space1 == -1) {
+        bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /info <id> <secret>", "");
+        continue;
+      }
+      
+      String secretParams = params.substring(space1 + 1);
+      secretParams.trim();
+      
+      if (secretParams.length() == 0) {
+        bot.sendMessage(chat_id, "ต้องระบุรหัสลับสำหรับเรียกดูข้อมูล", "");
+        continue;
+      }
+      
+      // สร้าง JSON สำหรับ MQTT
+      StaticJsonDocument<200> doc;
+      doc["command"] = "info";
+      doc["device_id"] = deviceIdStr2;
+      doc["secret"] = secretParams;
+      doc["timestamp"] = millis();
+      
+      // ส่งผ่าน MQTT
+      String topic = String(mqtt_topic_cmd) + deviceIdStr2;
+      String jsonStr;
+      serializeJson(doc, jsonStr);
+      
+      if (mqtt.publish(topic.c_str(), jsonStr.c_str())) {
+        bot.sendMessage(chat_id, "กำลังเรียกข้อมูลของอุปกรณ์ " + deviceIdStr2, "");
+        Serial.println("ส่งคำสั่ง info ไปยัง MQTT สำเร็จ: " + jsonStr);
+      } else {
+        bot.sendMessage(chat_id, "เกิดข้อผิดพลาดในการส่งคำสั่ง", "");
+        Serial.println("ส่งคำสั่งไปยัง MQTT ล้มเหลว");
+      }
+    }
+    
+    // --------------- คำสั่งจัดการ ChatID ที่ต้องตรวจสอบ ESP32 Device ID ก่อน ---------------
     
     // ---------- คำสั่ง /addchatid ----------
     else if (text.startsWith("/addchatid")) {
+      // ตรวจสอบ device ID ก่อนทำคำสั่ง
+      if (!checkDeviceId(deviceIdStr2)) {
+        bot.sendMessage(chat_id, "Device ID ไม่ถูกต้อง สำหรับ ESP32 Bridge นี้", "");
+        continue;
+      }
+      
       if (space1 == -1) {
-        bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /addchatid <id> <chat_id>", "");
+        bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /addchatid <esp32_id> <chat_id>", "");
         continue;
       }
       
@@ -721,11 +796,16 @@ void handleNewMessages(int numNewMessages) {
       
       Serial.println("เพิ่ม Chat ID: " + newChatId + " สำเร็จ");
     }
-
     // ---------- คำสั่ง /updatechatid ----------
     else if (text.startsWith("/updatechatid")) {
+      // ตรวจสอบ device ID ก่อนทำคำสั่ง
+      if (!checkDeviceId(deviceIdStr2)) {
+        bot.sendMessage(chat_id, "Device ID ไม่ถูกต้อง สำหรับ ESP32 Bridge นี้", "");
+        continue;
+      }
+      
       if (space1 == -1) {
-        bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /updatechatid <id> <index(1-5)> <old_chatid> <new_chatid>", "");
+        bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /updatechatid <esp32_id> <index(3-5)> <old_chatid> <new_chatid>", "");
         continue;
       }
       
@@ -734,7 +814,7 @@ void handleNewMessages(int numNewMessages) {
       int space3 = restParams.indexOf(' ', space2 + 1);
       
       if (space2 == -1 || space3 == -1) {
-        bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /updatechatid <id> <index(1-5)> <old_chatid> <new_chatid>", "");
+        bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /updatechatid <esp32_id> <index(3-5)> <old_chatid> <new_chatid>", "");
         continue;
       }
       
@@ -753,8 +833,9 @@ void handleNewMessages(int numNewMessages) {
       
       int idx = indexStr.toInt();
       
-      if (idx < 1 || idx > MAX_ALLOWED_CHATIDS) {
-        bot.sendMessage(chat_id, "Index ต้องอยู่ระหว่าง 1-" + String(MAX_ALLOWED_CHATIDS), "");
+      // เช็คว่า index ที่ระบุอยู่ในช่วง 3-5 เท่านั้น
+      if (idx < 3 || idx > MAX_ALLOWED_CHATIDS) {
+        bot.sendMessage(chat_id, "Index ต้องอยู่ระหว่าง 3-" + String(MAX_ALLOWED_CHATIDS), "");
         continue;
       }
       
@@ -782,23 +863,41 @@ void handleNewMessages(int numNewMessages) {
 
     // ---------- คำสั่ง /removechatid ----------
     else if (text.startsWith("/removechatid")) {
-      if (space1 == -1) {
-        bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /removechatid <id> <index(1-5)>", "");
+      // ตรวจสอบ device ID ก่อนทำคำสั่ง
+      if (!checkDeviceId(deviceIdStr2)) {
+        bot.sendMessage(chat_id, "Device ID ไม่ถูกต้อง สำหรับ ESP32 Bridge นี้", "");
         continue;
       }
       
-      String indexStr = params.substring(space1 + 1);
-      indexStr.trim();
+      if (space1 == -1) {
+        bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /removechatid <esp32_id> <index(3-5)> <old_id>", "");
+        continue;
+      }
       
-      if (!isNumeric(indexStr)) {
-        bot.sendMessage(chat_id, "Index ต้องเป็นตัวเลข", "");
+      String restParams = params.substring(space1 + 1);
+      int space2 = restParams.indexOf(' ');
+      
+      if (space2 == -1) {
+        bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /removechatid <esp32_id> <index(3-5)> <old_id>", "");
+        continue;
+      }
+      
+      String indexStr = restParams.substring(0, space2);
+      String oldChatId = restParams.substring(space2 + 1);
+      
+      indexStr.trim();
+      oldChatId.trim();
+      
+      if (!isNumeric(indexStr) || !isNumeric(oldChatId)) {
+        bot.sendMessage(chat_id, "Index และ Chat ID ต้องเป็นตัวเลข", "");
         continue;
       }
       
       int idx = indexStr.toInt();
       
-      if (idx < 1 || idx > MAX_ALLOWED_CHATIDS) {
-        bot.sendMessage(chat_id, "Index ต้องอยู่ระหว่าง 1-" + String(MAX_ALLOWED_CHATIDS), "");
+      // เช็คว่า index ที่ระบุอยู่ในช่วง 3-5 เท่านั้น
+      if (idx < 3 || idx > MAX_ALLOWED_CHATIDS) {
+        bot.sendMessage(chat_id, "Index ต้องอยู่ระหว่าง 3-" + String(MAX_ALLOWED_CHATIDS), "");
         continue;
       }
       
@@ -809,8 +908,9 @@ void handleNewMessages(int numNewMessages) {
         continue;
       }
       
-      if (idx <= 2) {
-        bot.sendMessage(chat_id, "ไม่สามารถลบ Chat ID ที่เป็นค่าเริ่มต้น (ลำดับ 1-2) ได้", "");
+      // ตรวจสอบว่า old_id ตรงกับที่เก็บไว้หรือไม่
+      if (authorizedChatIds[arrayIndex] != oldChatId) {
+        bot.sendMessage(chat_id, "ไม่สามารถลบได้: Chat ID ที่ระบุไม่ตรงกับที่เก็บไว้", "");
         continue;
       }
       
@@ -830,8 +930,15 @@ void handleNewMessages(int numNewMessages) {
       bot.sendMessage(chat_id, "ลบ Chat ID ลำดับ " + String(idx) + ": " + removedChatId + " สำเร็จ", "");
       Serial.println("ลบ Chat ID ลำดับ " + String(idx) + ": " + removedChatId);
     }
+    
     // ---------- คำสั่ง /listchatids ----------
     else if (text.startsWith("/listchatids")) {
+      // ตรวจสอบ device ID ก่อนทำคำสั่ง
+      if (!checkDeviceId(deviceIdStr2)) {
+        bot.sendMessage(chat_id, "Device ID ไม่ถูกต้อง สำหรับ ESP32 Bridge นี้", "");
+        continue;
+      }
+      
       String msg = "รายการ Chat IDs ที่อนุญาต:\n";
       
       for (int j = 0; j < numAuthorizedChatIds; j++) {
@@ -841,15 +948,11 @@ void handleNewMessages(int numNewMessages) {
       bot.sendMessage(chat_id, msg, "");
     }
     
-    // ---------- คำสั่งที่เหลือ ----------
-    // ในที่นี้ทำเพียงบางส่วนเท่านั้น ยังเหลืออีกหลายคำสั่ง
-    // คุณสามารถเพิ่มกรณีอื่นๆ ได้ต่อจากนี้
-    
     // ---------- คำสั่ง /help หรือกรณีไม่รู้จักคำสั่ง ----------
     else if (text.startsWith("/help")) {
       bot.sendMessage(chat_id, HELP_MESSAGE, "");
     } else {
-      bot.sendMessage(chat_id, "ไม่รู้จักคำสั่งนี้\nพิมพ์ /help <id> เพื่อดูรายการคำสั่งทั้งหมด", "");
+      bot.sendMessage(chat_id, "ไม่รู้จักคำสั่งนี้\nพิมพ์ /help เพื่อดูรายการคำสั่งทั้งหมด", "");
     }
   }
 }
@@ -915,4 +1018,10 @@ void loadAllowedChatIDs() {
       authorizedChatIds[i] = "";
     }
   }
+}
+
+void blink() {
+  static bool ledState = false;
+  ledState = !ledState;
+  digitalWrite(LED_PIN, ledState);
 }
