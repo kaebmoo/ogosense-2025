@@ -168,6 +168,9 @@ void connectToWiFi() {
 void autoWifiConnect()
 {
   WiFiManager wifiManager;
+  wifiManager.setConnectTimeout(20);         // timeout 20 วินาที
+  wifiManager.setConfigPortalTimeout(180);   // portal จะรอ 3 นาที
+
   bool res;
 
   //first parameter is name of access point, second is the password
@@ -182,6 +185,9 @@ void autoWifiConnect()
   else {
       //if you get here you have connected to the WiFi    
       Serial.println("connected...yeey :)");
+      Serial.println("WiFiManager: เชื่อมต่อสำเร็จ");
+      Serial.print("IP Address: ");
+      Serial.println(WiFi.localIP());
   }
 }
 
