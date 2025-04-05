@@ -381,7 +381,6 @@ void handleNewMessages(int numNewMessages) {
         Serial.println("ส่งคำสั่งไปยัง MQTT ล้มเหลว");
       }
     }
-    
     // ---------- คำสั่ง /settemp ----------
     else if (text.startsWith("/settemp")) {
       if (space1 == -1) {
@@ -408,6 +407,18 @@ void handleNewMessages(int numNewMessages) {
       float lowTemp = lowTempStr.toFloat();
       float highTemp = highTempStr.toFloat();
       
+      // ตรวจสอบขอบเขตค่า
+      if (lowTemp < 0 || highTemp > 100) {
+        bot.sendMessage(chat_id, "ค่าอุณหภูมิต้องอยู่ระหว่าง 0-100°C", "");
+        continue;
+      }
+      
+      // ตรวจสอบว่า lowTemp ต้องน้อยกว่า highTemp
+      if (lowTemp >= highTemp) {
+        bot.sendMessage(chat_id, "ค่าอุณหภูมิต่ำสุดต้องน้อยกว่าค่าอุณหภูมิสูงสุด", "");
+        continue;
+      }
+      
       // สร้าง JSON สำหรับ MQTT
       StaticJsonDocument<200> doc;
       doc["command"] = "settemp";
@@ -429,7 +440,7 @@ void handleNewMessages(int numNewMessages) {
         Serial.println("ส่งคำสั่งไปยัง MQTT ล้มเหลว");
       }
     }
-    
+
     // ---------- คำสั่ง /sethum ----------
     else if (text.startsWith("/sethum")) {
       if (space1 == -1) {
@@ -455,6 +466,18 @@ void handleNewMessages(int numNewMessages) {
       
       float lowHum = lowHumStr.toFloat();
       float highHum = highHumStr.toFloat();
+      
+      // ตรวจสอบขอบเขตค่า
+      if (lowHum < 0 || highHum > 100) {
+        bot.sendMessage(chat_id, "ค่าความชื้นต้องอยู่ระหว่าง 0-100%", "");
+        continue;
+      }
+      
+      // ตรวจสอบว่า lowHum ต้องน้อยกว่า highHum
+      if (lowHum >= highHum) {
+        bot.sendMessage(chat_id, "ค่าความชื้นต่ำสุดต้องน้อยกว่าค่าความชื้นสูงสุด", "");
+        continue;
+      }
       
       // สร้าง JSON สำหรับ MQTT
       StaticJsonDocument<200> doc;
