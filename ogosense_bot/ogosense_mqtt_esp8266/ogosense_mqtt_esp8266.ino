@@ -1463,23 +1463,54 @@ void saveConfig() {
 void getConfig() {
   EEPROM.begin(EEPROM_SIZE);
 
-  highHumidity = (float) EEPROMReadlong(EEPROM_ADDR_HIGH_HUMIDITY);
-  lowHumidity  = (float) EEPROMReadlong(EEPROM_ADDR_LOW_HUMIDITY);
-  highTemp     = (float) EEPROMReadlong(EEPROM_ADDR_HIGH_TEMP);
-  lowTemp      = (float) EEPROMReadlong(EEPROM_ADDR_LOW_TEMP);
+  // ตรวจสอบว่า EEPROM ถูกเขียนไว้แล้วหรือยัง โดยดูจาก version mark
+  int version = eeGetInt(EEPROM_ADDR_VERSION_MARK);
 
-  options  = eeGetInt(EEPROM_ADDR_OPTIONS);
-  COOL     = eeGetInt(EEPROM_ADDR_COOL);
-  MOISTURE = eeGetInt(EEPROM_ADDR_MOISTURE);
+  if (version != 6550) {
+    Serial.println("EEPROM ไม่เคยถูกกำหนดค่า กำลังโหลดค่าดีฟอลต์...");
+    // ตั้งค่าดีฟอลต์
+    highHumidity = HIGH_HUMIDITY;
+    lowHumidity  = LOW_HUMIDITY;
+    highTemp     = HIGH_TEMPERATURE;
+    lowTemp      = LOW_TEMPERATURE;
 
-  readEEPROM(writeAPIKey, EEPROM_ADDR_WRITE_APIKEY, 16);
-  readEEPROM(readAPIKey,  EEPROM_ADDR_READ_APIKEY, 16);
-  readEEPROM(auth,        EEPROM_ADDR_AUTH,        32);
+    options  = OPTIONS;
+    COOL     = COOL_MODE;
+    MOISTURE = MOISTURE_MODE;
 
-  channelID = (unsigned long) EEPROMReadlong(EEPROM_ADDR_CHANNEL_ID);
-  readEEPROM(deviceName, EEPROM_ADDR_DEVICE_NAME, DEVICE_NAME_MAX_BYTES);
+    strncpy(writeAPIKey,  writeAPIKey, sizeof(writeAPIKey));
+    strncpy(readAPIKey,   readAPIKey, sizeof(readAPIKey));
+    strncpy(deviceName,   deviceName, sizeof(deviceName));
+    strncpy(auth,         auth,       sizeof(auth));
+    // ใช้ channelID ที่กำหนดไว้แล้ว
+
+    saveConfig();  // เขียนค่า default ลง EEPROM
+    Serial.println("ค่าดีฟอลต์ถูกบันทึกลง EEPROM แล้ว");
+  } else {
+    // อ่านค่าจาก EEPROM ตามปกติ
+    highHumidity = (float) EEPROMReadlong(EEPROM_ADDR_HIGH_HUMIDITY);
+    lowHumidity  = (float) EEPROMReadlong(EEPROM_ADDR_LOW_HUMIDITY);
+    highTemp     = (float) EEPROMReadlong(EEPROM_ADDR_HIGH_TEMP);
+    lowTemp      = (float) EEPROMReadlong(EEPROM_ADDR_LOW_TEMP);
+
+    options  = eeGetInt(EEPROM_ADDR_OPTIONS);
+    COOL     = eeGetInt(EEPROM_ADDR_COOL);
+    MOISTURE = eeGetInt(EEPROM_ADDR_MOISTURE);
+
+    readEEPROM(writeAPIKey, EEPROM_ADDR_WRITE_APIKEY, 16);
+    readEEPROM(readAPIKey,  EEPROM_ADDR_READ_APIKEY, 16);
+    readEEPROM(auth,        EEPROM_ADDR_AUTH,        32);
+
+    channelID = (unsigned long) EEPROMReadlong(EEPROM_ADDR_CHANNEL_ID);
+    readEEPROM(deviceName, EEPROM_ADDR_DEVICE_NAME, DEVICE_NAME_MAX_BYTES);
+  }
 
   EEPROM.end();
+
+  // ตรวจสอบความถูกต้องเพิ่มเติม
+  if (options < 0 || options > 4) options = OPTIONS;
+  if (COOL != 0 && COOL != 1) COOL = COOL_MODE;
+  if (MOISTURE != 0 && MOISTURE != 1) MOISTURE = MOISTURE_MODE;
 }
 
 void eeWriteInt(int pos, int val) {
