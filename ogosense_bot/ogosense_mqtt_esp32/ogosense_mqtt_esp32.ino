@@ -296,8 +296,16 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
         if (doc["data"].containsKey("name")) 
           telegramResponse += "ชื่ออุปกรณ์: " + doc["data"]["name"].as<String>() + "\n";
           
-        if (doc["data"].containsKey("option")) 
-          telegramResponse += "ตัวเลือก: " + String(doc["data"]["option"].as<int>()) + "\n";
+        if (doc["data"].containsKey("option")) {
+          int option = doc["data"]["option"].as<int>();
+          String optionText = 
+            (option == 0) ? "Humidity only" :
+            (option == 1) ? "Temperature only" :
+            (option == 2) ? "Temperature & Humidity" :
+            (option == 3) ? "Soil Moisture mode" :
+            (option == 4) ? "Additional mode" : "Unknown";
+          telegramResponse += "ตัวเลือก: " + optionText + "\n";
+        }
       }
       else if ((command == "settemp" || command == "sethum") && doc.containsKey("data")) {
         if (doc["data"].containsKey("low") && doc["data"].containsKey("high")) {
@@ -364,16 +372,51 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
         if (doc["data"].containsKey("mode"))
           telegramResponse += "โหมด: " + doc["data"]["mode"].as<String>() + "\n";
         
-        if (doc["data"].containsKey("option"))
-          telegramResponse += "ตัวเลือก: " + String(doc["data"]["option"].as<int>()) + "\n";
+        if (doc["data"].containsKey("option")) {
+          int option = doc["data"]["option"].as<int>();
+          String optionText = 
+            (option == 0) ? "Humidity only" :
+            (option == 1) ? "Temperature only" :
+            (option == 2) ? "Temperature & Humidity" :
+            (option == 3) ? "Soil Moisture mode" :
+            (option == 4) ? "Additional mode" : "Unknown";
+          telegramResponse += "ตัวเลือก: " + optionText + "\n";
+        }
         
-        if (doc["data"].containsKey("cool"))
-          telegramResponse += "เป็นเครื่องทำความเย็น: " + String(doc["data"]["cool"].as<bool>() ? "ใช่" : "ไม่ใช่") + "\n";
+        if (doc["data"].containsKey("cool")) {
+          bool coolMode = doc["data"]["cool"].as<bool>();
+          String coolText = (coolMode) ? 
+            "COOL mode: Relay ON เมื่อ Temp >= High" : 
+            "HEAT mode: Relay ON เมื่อ Temp <= Low";
+          telegramResponse += "โหมดทำความเย็น: " + coolText + "\n";
+        }
+        
+        if (doc["data"].containsKey("moisture")) {
+          bool moistureMode = doc["data"]["moisture"].as<bool>();
+          String moistureText = (moistureMode) ? 
+            "Moisture mode: Relay ON เมื่อ Humidity <= Low" : 
+            "Dehumidifier mode: Relay ON เมื่อ Humidity >= High";
+          telegramResponse += "โหมดความชื้น: " + moistureText + "\n";
+        }
         
         if (doc["data"].containsKey("thingspeak_channel"))
           telegramResponse += "ThingSpeak Channel: " + String(doc["data"]["thingspeak_channel"].as<unsigned long>()) + "\n";
+        
+        // แสดง write_api_key แบบปกปิดบางส่วน
+        if (doc["data"].containsKey("write_api_key")) {
+          String apiKey = doc["data"]["write_api_key"].as<String>();
+          String maskedKey = "";
+          
+          // แสดงแค่ 4 ตัวแรกและปกปิดที่เหลือด้วย *
+          if (apiKey.length() > 4) {
+            maskedKey = apiKey.substring(0, 4) + "****"; 
+          } else {
+            maskedKey = apiKey;
+          }
+          
+          telegramResponse += "ThingSpeak Write API Key: " + maskedKey + "\n";
+        }
       }
-
       // ส่งข้อความไปยัง Telegram
       // สำหรับ chat_id เราต้องการให้ส่งกลับไปยัง chat_id ที่ส่งคำสั่งมา
       // ในที่นี้จะใช้ ADMIN_CHAT_ID เป็นตัวอย่าง (ควรเก็บ chat_id ไว้ก่อนหน้านี้)
