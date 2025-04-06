@@ -126,7 +126,8 @@ void setup() {
   mqtt.setServer(mqtt_broker, mqtt_port);
   mqtt.setCallback(mqttCallback);
   connectToMQTT();
-  mqtt.subscribe(mqtt_topic_resp);
+  mqtt.setBufferSize(1024);
+  mqtt.subscribe(mqtt_topic_resp, 1);
 
   bot_lasttime = millis();
   blinker.attach(1.0, blink);  // เรียก blink() ทุก 1 วินาที
@@ -134,13 +135,20 @@ void setup() {
 
 void loop() {
   
-  // ตรวจสอบการเชื่อมต่อ MQTT
-  if (!mqtt.connected()) {
-    connectToMQTT();
-  }
-  mqtt.loop();
+  static unsigned long lastReconnectAttempt = 0;
   
-
+  // ตรวจสอบการเชื่อมต่อ MQTT ทุก 5 วินาที
+  if (!mqtt.connected()) {
+    unsigned long now = millis();
+    if (now - lastReconnectAttempt > 5000) {
+      lastReconnectAttempt = now;
+      Serial.println("การเชื่อมต่อ MQTT ขาดหาย พยายามเชื่อมต่อใหม่...");
+      connectToMQTT();
+    }
+  } else {
+    mqtt.loop();
+  }
+  
   // ตรวจสอบข้อความใหม่จาก Telegram
   if (millis() > bot_lasttime + BOT_MTBS) {
     int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
@@ -151,6 +159,8 @@ void loop() {
     }
     bot_lasttime = millis();
   }
+
+  delay(1);
 }
 
 void connectToWiFi() {
@@ -216,6 +226,9 @@ void connectToMQTT() {
 
     if (mqtt.connect(client_id.c_str(), mqtt_username, mqtt_password)) {
       Serial.println("สำเร็จ");
+      // เมื่อเชื่อมต่อสำเร็จ ต้อง subscribe topic ใหม่อีกครั้ง
+      mqtt.subscribe(mqtt_topic_resp, 1);
+      Serial.println("Subscribe topic: " + String(mqtt_topic_resp));
     } else {
       Serial.print("ล้มเหลว state=");
       Serial.print(mqtt.state());
