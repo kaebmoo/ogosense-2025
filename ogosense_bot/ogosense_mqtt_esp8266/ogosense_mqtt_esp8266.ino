@@ -683,7 +683,7 @@ void sendMqttResponse(const String& command, JsonDocument& response) {
   }
   
   // ตรวจสอบขนาดอีกครั้งก่อนส่ง
-  if (jsonStr.length() > 400) {  // ตั้งค่าตามขนาดที่คิดว่าปลอดภัย
+  if (jsonStr.length() > 450) {  // ตั้งค่าตามขนาดที่คิดว่าปลอดภัย
     Serial.println("Error: Message too large for MQTT buffer");
     return;
   }
