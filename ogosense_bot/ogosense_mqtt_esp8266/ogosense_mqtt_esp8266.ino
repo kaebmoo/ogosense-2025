@@ -273,7 +273,8 @@ void setup() {
   // เชื่อมต่อ MQTT
    // จัดสรรพื้นที่ให้ BearSSL ในหน่วยความจำ IRAM
   HeapSelectIram ephemeral;
-  mqttClient.connect(mqtt_server, mqtt_port);
+  // mqttClient.connect(mqtt_server, mqtt_port);
+  reconnectMQTT;
   mqtt.setKeepAlive(60);
 }
 
@@ -289,8 +290,10 @@ void loop() {
     // ลองเชื่อมต่อใหม่ทุก 30 วินาที
     if (currentMillis - lastReconnectAttempt > 30000) {
       lastReconnectAttempt = currentMillis;
-      Serial.println("Attempting MQTT reconnection...");
-      reconnectMQTT();
+      if (checkAndReconnectWifi()) {
+        Serial.println("Attempting MQTT reconnection...");
+        reconnectMQTT();
+      }
     }
   } else {
     mqtt.loop();
@@ -703,6 +706,41 @@ void sendMqttResponse(const String& command, JsonDocument& response) {
       case 5: Serial.println("Unauthorized"); break;
     }
   }
+}
+
+bool checkAndReconnectWifi() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi connection lost");
+    
+    // ลองเชื่อมต่อใหม่ด้วยค่าที่บันทึกไว้
+    WiFi.reconnect();
+    
+    // รอ 10 วินาที
+    unsigned long startAttemptTime = millis();
+    while (WiFi.status() != WL_CONNECTED && 
+           millis() - startAttemptTime < 10000) {
+      Serial.print(".");
+      delay(500);
+    }
+    
+    // ถ้ายังเชื่อมต่อไม่ได้ ใช้ WiFiManager
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("\nStarting WiFiManager for configuration");
+      WiFiManager wifiManager;
+      bool res = wifiManager.autoConnect("ogosense", "12345678");
+      if (!res) {
+        Serial.println("Failed to connect with WiFiManager");
+        return false;
+      } else {
+        Serial.println("Connected via WiFiManager");
+        return true;
+      }
+    } else {
+      Serial.println("\nWiFi reconnected");
+      return true;
+    }
+  }
+  return true;
 }
 
 void __reconnectMQTT() {
