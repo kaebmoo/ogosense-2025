@@ -63,7 +63,7 @@ SOFTWARE.
 #include <EEPROM.h>
 #include <ArduinoJson.h>
 
-#define MQTT_MAX_PACKET_SIZE 1024
+#define MQTT_MAX_PACKET_SIZE 2048
 #include <PubSubClient.h>
 #include <Timer.h>  //https://github.com/JChristensen/Timer
 #include <Ticker.h>  //Ticker Library
@@ -137,6 +137,7 @@ Timer t_blink;           // สร้าง object สำหรับ timer
 
 Ticker blinker;
 Ticker t_readSensor;
+Ticker watchdogTicker;
 
 volatile bool shouldReadSensor = false;
 volatile bool shouldCheckTelegram = false;
@@ -184,7 +185,7 @@ void blink();
 void printConfig();
 bool isNumeric(const String& str);
 void processCommand(StaticJsonDocument<1024>& doc);
-void sendMqttResponse(const String& command, StaticJsonDocument<512>& response);
+void sendMqttResponse(const String& command, JsonDocument& response);
 
 // EEPROM functions
 void eeWriteInt(int pos, int val);
@@ -216,6 +217,8 @@ void setup() {
     pinMode(RELAY2, OUTPUT);
     digitalWrite(RELAY2, LOW);
   #endif
+
+
 
   // t_blink.every(1000, blink); // 1 second   // กระพริบ LED ทุก 1 วินาที
   blinker.attach(1, blink); //Use attach_ms if you need time in ms
@@ -249,7 +252,8 @@ void setup() {
   // ตั้งค่า MQTT
   mqtt.setServer(mqtt_server, mqtt_port);
   mqtt.setCallback(mqttCallback);
-  mqttClient.setBufferSizes(1024, 1024);
+  mqttClient.setBufferSizes(2048, 2048);
+  mqtt.setBufferSize(2048);
 
   #ifdef THINGSPEAK
     ThingSpeak.begin(client);
@@ -258,6 +262,9 @@ void setup() {
   t_readSensor.attach(5, setReadSensorFlag);  // 5 seconds  // อ่านค่า sensor ทุก 5 วินาที
   t_sendDatatoThinkSpeak.every(60L * 1000L, sendDataToThingSpeak);  // ส่งข้อมูลไป ThingSpeak ทุก 1 นาที
 
+  // ตั้งค่า watchdog
+  watchdogTicker.attach(60, checkSystem);  // ตรวจสอบทุก 60 วินาที
+
   // เชื่อมต่อ MQTT
   reconnectMQTT();
   mqtt.setKeepAlive(60);
@@ -265,12 +272,22 @@ void setup() {
 
 void loop() {
   // put your main code here, to run repeatedly:
+  unsigned long currentMillis = millis();
+  static unsigned long lastYieldTime = 0;
+  static unsigned long lastReconnectAttempt = 0;
 
   // ตรวจสอบการเชื่อมต่อ MQTT
+  // ตรวจสอบการเชื่อมต่อ MQTT และลองใหม่ทุก 30 วินาที
   if (!mqtt.connected()) {
-    reconnectMQTT();
+    // ลองเชื่อมต่อใหม่ทุก 30 วินาที
+    if (currentMillis - lastReconnectAttempt > 30000) {
+      lastReconnectAttempt = currentMillis;
+      Serial.println("Attempting MQTT reconnection...");
+      reconnectMQTT();
+    }
+  } else {
+    mqtt.loop();
   }
-  mqtt.loop();
 
   if (shouldReadSensor) {
     shouldReadSensor = false;
@@ -279,16 +296,58 @@ void loop() {
 
   t_relay.update();
   t_delayStart.update();
-
   t_relay2.update();
   t_delayStart2.update();
-
   t_sendDatatoThinkSpeak.update();
+
+  // เรียก yield ทุก 50ms เพื่อป้องกัน watchdog timeout
+  if (currentMillis - lastYieldTime > 50) {
+    yield();
+    lastYieldTime = currentMillis;
+  }
+  
+  delay(1);
 
 }
 
 void setReadSensorFlag() {
   shouldReadSensor = true;
+}
+
+// ฟังก์ชันสำหรับตรวจสอบระบบ
+void checkSystem() {
+  static unsigned long lastSuccessfulMqttOperation = 0;
+  static int failCount = 0;
+  
+  // ตรวจสอบการเชื่อมต่อ MQTT
+  if (mqtt.connected()) {
+    lastSuccessfulMqttOperation = millis();
+    failCount = 0;
+  } else {
+    // ตรวจสอบการ overflow ของ millis()
+    unsigned long currentMillis = millis();
+    if (currentMillis < lastSuccessfulMqttOperation) {
+      // millis() overflow
+      lastSuccessfulMqttOperation = currentMillis;
+    } else if (currentMillis - lastSuccessfulMqttOperation > 5 * 60 * 1000) {
+      failCount++;
+      if (failCount >= 3) {
+        Serial.println("System appears stuck, restarting...");
+        stopTimers();
+        ESP.restart();
+      }
+    }
+  }
+  
+  // เพิ่ม: ตรวจสอบ heap memory ที่เหลือ
+  int freeHeap = ESP.getFreeHeap();
+  Serial.printf("Free heap: %d bytes\n", freeHeap);
+  
+  // หากหน่วยความจำน้อยเกินไป ให้รีสตาร์ท
+  if (freeHeap < 4000) {  // ปรับค่าตามความเหมาะสม
+    Serial.println("Low memory condition, restarting...");
+    ESP.restart();
+  }
 }
 
 void processCommand(StaticJsonDocument<1024>& doc) {
@@ -312,7 +371,7 @@ void processCommand(StaticJsonDocument<1024>& doc) {
   }
   
   // Create response document
-  StaticJsonDocument<512> response;
+  DynamicJsonDocument response(1024);
   response["device_id"] = String(DEVICE_ID);
   response["command"] = command;
   response["success"] = true;
@@ -404,8 +463,10 @@ void processCommand(StaticJsonDocument<1024>& doc) {
       String mode = doc["mode"].as<String>();
       if (mode == "auto") {
         AUTO = true;
+        stopTimers();
       } else if (mode == "manual") {
         AUTO = false;
+        stopTimers();
       } else {
         response["success"] = false;
         response["message"] = "Invalid mode (use 'auto' or 'manual')";
@@ -541,16 +602,11 @@ void processCommand(StaticJsonDocument<1024>& doc) {
     }
   }
   else if (command == "info") {
-    // ใช้ document ขนาดใหญ่สำหรับ info response
-    StaticJsonDocument<1024> infoResponse;
-    infoResponse["device_id"] = String(DEVICE_ID);
-    infoResponse["command"] = command;
-    infoResponse["success"] = true;
-    
     if (doc.containsKey("secret")) {
       String secret = doc["secret"].as<String>();
       if (secret == INFO_SECRET) {
-        JsonObject data = infoResponse.createNestedObject("data");
+        // ใช้ response ที่สร้างไว้แล้ว แทนการสร้างใหม่
+        JsonObject data = response.createNestedObject("data");
         data["name"] = deviceName;
         data["device_id"] = DEVICE_ID;
         data["temp_low"] = lowTemp;
@@ -562,22 +618,7 @@ void processCommand(StaticJsonDocument<1024>& doc) {
         data["cool"] = COOL;
         data["thingspeak_channel"] = channelID;
         
-        infoResponse["message"] = "Device information retrieved";
-        
-        // ส่ง info response แยกต่างหาก
-        String jsonStr;
-        serializeJson(infoResponse, jsonStr);
-        Serial.print("Info JSON size: ");
-        Serial.println(jsonStr.length());
-        
-        String topic = String(mqtt_topic_resp) + String(DEVICE_ID);
-        if (mqtt.publish(topic.c_str(), jsonStr.c_str())) {
-          Serial.println("Info sent to MQTT successfully");
-        } else {
-          Serial.println("Failed to send info to MQTT");
-        }
-        
-        return;  // ไม่ต้องส่ง response อีกครั้งที่ท้ายฟังก์ชัน
+        response["message"] = "Device information retrieved";
       } else {
         response["success"] = false;
         response["message"] = "Invalid secret code";
@@ -597,24 +638,42 @@ void processCommand(StaticJsonDocument<1024>& doc) {
   sendMqttResponse(command, response);
 }
 
-void sendMqttResponse(const String& command, StaticJsonDocument<512>& response) {
+void sendMqttResponse(const String& command, JsonDocument& response) {
   String jsonStr;
+  size_t len = measureJson(response);
+  
+  // ตรวจสอบขนาดก่อนส่ง
+  if (len > 256) {  // หรือตามขนาด buffer ที่คิดว่าปลอดภัย
+    Serial.println("Warning: Response too large, trimming data");
+    // ลดขนาดข้อมูล โดยการลบฟิลด์ที่ไม่จำเป็น
+    if (response.containsKey("data")) {
+      JsonObject data = response["data"];
+      // ลบฟิลด์ที่อาจมีขนาดใหญ่
+      if (data.containsKey("message")) data.remove("message");
+      if (data.containsKey("description")) data.remove("description");
+    }
+  }
+  
   serializeJson(response, jsonStr);
   
   String topic = String(mqtt_topic_resp) + String(DEVICE_ID);
   
-  // เพิ่ม Debug
+  // เพิ่ม Debug แสดงขนาดข้อความ
   Serial.print("Sending to topic: ");
   Serial.println(topic);
   Serial.print("JSON size: ");
   Serial.println(jsonStr.length());
-  Serial.print("JSON content: ");
-  Serial.println(jsonStr);
   
-  // ตรวจสอบว่ายังเชื่อมต่ออยู่หรือไม่
+  // ตรวจสอบการเชื่อมต่อก่อนส่ง
   if (!mqtt.connected()) {
     Serial.println("MQTT disconnected, attempting to reconnect...");
     reconnectMQTT();
+  }
+  
+  // ตรวจสอบขนาดอีกครั้งก่อนส่ง
+  if (jsonStr.length() > 1500) {  // ตั้งค่าตามขนาดที่คิดว่าปลอดภัย
+    Serial.println("Error: Message too large for MQTT buffer");
+    return;
   }
   
   // ใช้ QoS 1 และไม่ retain (false)
@@ -640,50 +699,151 @@ void sendMqttResponse(const String& command, StaticJsonDocument<512>& response) 
 }
 
 void reconnectMQTT() {
+  // ไม่ใช้ bool เพื่อลดการสร้างตัวแปรบน stack
+  char client_id[20]; // ลดขนาดลงเพื่อประหยัดหน่วยความจำ
+  static int retries = 0; // เปลี่ยนเป็น static เพื่อลดการใช้ stack
+  static unsigned long lastAttempt = 0;
+  
+  unsigned long currentMillis = millis();
+  
+  // ลองเชื่อมต่อใหม่แค่ทุก 5 วินาที
+  if (currentMillis - lastAttempt < 5000) {
+    return; // ยังไม่ถึงเวลาลองใหม่
+  }
+  
+  lastAttempt = currentMillis;
+  
+  // ตรวจสอบว่ายังเชื่อมต่ออยู่หรือไม่
+  if (mqtt.connected()) {
+    retries = 0;
+    return;
+  }
+  
+  // ถ้าลองมากเกินไป รอให้นานขึ้น
+  if (retries >= 3) {
+    Serial.println("Too many MQTT connection attempts, waiting longer...");
+    if (retries >= 5) {
+      Serial.println("Maximum reconnection attempts reached. Restarting...");
+      stopTimers();
+      ESP.restart();
+    }
+    retries++;
+    return;
+  }
+  
+  // สร้าง client ID แบบง่าย
+  snprintf(client_id, sizeof(client_id), "ESP-%d", DEVICE_ID);
+  
+  Serial.print("MQTT connecting as ");
+  Serial.print(client_id);
+  Serial.print("... ");
+  
+  // ลองเชื่อมต่อแบบง่าย - ไม่ใส่ will topic/message ในครั้งแรก
+  if (retries < 2) {
+    if (mqtt.connect(client_id, mqtt_username, mqtt_password)) {
+      Serial.println("connected!");
+      
+      // สมัครรับข้อมูล
+      char topic[40];
+      snprintf(topic, sizeof(topic), "%s%d", mqtt_topic_cmd, DEVICE_ID);
+      mqtt.subscribe(topic);
+      
+      retries = 0;
+      return;
+    }
+  } 
+  // ถ้าลองแบบง่ายไม่สำเร็จ จึงลองแบบมี will message
+  else {
+    char willTopic[40];
+    snprintf(willTopic, sizeof(willTopic), "%s%d/status", mqtt_topic_resp, DEVICE_ID);
+    
+    if (mqtt.connect(client_id, mqtt_username, mqtt_password, willTopic, 0, true, "{\"status\":\"offline\"}")) {
+      Serial.println("connected with will!");
+      
+      // สมัครรับข้อมูล
+      char topic[40];
+      snprintf(topic, sizeof(topic), "%s%d", mqtt_topic_cmd, DEVICE_ID);
+      mqtt.subscribe(topic);
+      
+      // ส่งสถานะออนไลน์
+      mqtt.publish(willTopic, "{\"status\":\"online\"}", true);
+      
+      retries = 0;
+      return;
+    }
+  }
+  
+  Serial.print("failed, rc=");
+  Serial.println(mqtt.state());
+  retries++;
+  yield(); // ป้องกัน watchdog timeout
+}
+
+bool _reconnectMQTT() {
   int retries = 0;
-  while (!mqtt.connected() && retries < 5) {
-    String client_id = "ESP8266-" + String(DEVICE_ID);
+  char client_id[32];
+  snprintf(client_id, sizeof(client_id), "ESP8266-%d", DEVICE_ID);
+
+  while (!mqtt.connected() && retries < 3) {  // ลองเพียง 3 ครั้ง
     Serial.print("Connecting to MQTT broker as ");
     Serial.print(client_id);
     Serial.print("... ");
-    
-    // เพิ่ม last will message เพื่อแจ้งเมื่อหลุดการเชื่อมต่อ
-    String willTopic = String(mqtt_topic_resp) + String(DEVICE_ID) + "/status";
-    String willMessage = "{\"device_id\":" + String(DEVICE_ID) + ",\"status\":\"offline\"}";
-    
-    if (mqtt.connect(client_id.c_str(), mqtt_username, mqtt_password, 
-                     willTopic.c_str(), 0, true, willMessage.c_str())) {
+
+    char willTopic[64];
+    snprintf(willTopic, sizeof(willTopic), "%s%d/status", mqtt_topic_resp, DEVICE_ID);
+    const char* willMessage = "{\"status\":\"offline\"}";
+
+    if (mqtt.connect(client_id, mqtt_username, mqtt_password, willTopic, 0, true, willMessage)) {
       Serial.println("connected");
-      
-      // ส่งข้อความ "online" เมื่อเชื่อมต่อสำเร็จ
-      String onlineMsg = "{\"device_id\":" + String(DEVICE_ID) + ",\"status\":\"online\"}";
-      mqtt.publish(willTopic.c_str(), onlineMsg.c_str(), true);
-      
-      // Subscribe to command topic for this device
-      String topic = String(mqtt_topic_cmd) + String(DEVICE_ID);
-      mqtt.subscribe(topic.c_str());
+
+      // Publish online message
+      const char* onlineMsg = "{\"status\":\"online\"}";
+      mqtt.publish(willTopic, onlineMsg, true);
+
+      char topic[64];
+      snprintf(topic, sizeof(topic), "%s%d", mqtt_topic_cmd, DEVICE_ID);
+      mqtt.subscribe(topic);
       Serial.print("Subscribed to ");
       Serial.println(topic);
+
+      // เพิ่ม keep alive และ clean session
+      mqtt.setKeepAlive(60);
       
-      // Send a status message
-      StaticJsonDocument<200> doc;
-      doc["device_id"] = String(DEVICE_ID);
-      doc["event"] = "connected";
-      doc["name"] = deviceName;
-      
-      String jsonStr;
-      serializeJson(doc, jsonStr);
-      
-      String respTopic = String(mqtt_topic_resp) + String(DEVICE_ID);
-      mqtt.publish(respTopic.c_str(), jsonStr.c_str());
+      return true;  // สำเร็จ
     } else {
       Serial.print("failed, rc=");
       Serial.print(mqtt.state());
       Serial.println(" try again in 5 seconds");
       retries++;
       delay(5000);
+      yield();  // ป้องกัน watchdog timeout
     }
   }
+  
+  // เพิ่มการตรวจสอบภายนอกลูป
+  if (retries >= 3) {
+    Serial.println("Maximum MQTT reconnection attempts reached. Will try again later or restart.");
+    // บันทึกความล้มเหลวไว้ใน global variable เพื่อให้ checkSystem สามารถตรวจสอบได้
+    static unsigned long lastReconnectAttempt = 0;
+    static int failedReconnectCount = 0;
+    
+    unsigned long currentMillis = millis();
+    if (currentMillis - lastReconnectAttempt > 60000) { // หากพยายามใหม่ห่างกันเกิน 1 นาที ให้รีเซ็ทตัวนับ
+      failedReconnectCount = 1; 
+    } else {
+      failedReconnectCount++;
+    }
+    
+    lastReconnectAttempt = currentMillis;
+    
+    if (failedReconnectCount >= 3) {
+      Serial.println("Multiple reconnection failures, restarting...");
+      stopTimers();
+      ESP.restart();
+    }
+  }
+  
+  return false;  // ไม่สำเร็จ
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
@@ -691,10 +851,20 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   Serial.print(topic);
   Serial.print("]: ");
   
-  String message = "";
-  for (unsigned int i = 0; i < length; i++) {
-    message += (char)payload[i];
+  // ตรวจสอบว่าข้อความมีขนาดใหญ่เกินไปหรือไม่
+  if (length > 1024) {
+    Serial.println("Message too large!");
+    return;
   }
+  
+  // สร้าง buffer แยกเพื่อไม่ต้องแก้ไข payload โดยตรง
+  char message[1025]; // ต้องแน่ใจว่าขนาดเพียงพอ
+  if (length > sizeof(message) - 1) {
+    length = sizeof(message) - 1; // ป้องกัน buffer overflow
+  }
+  
+  memcpy(message, payload, length);
+  message[length] = '\0';
   Serial.println(message);
   
   // Check if this message is for this device
@@ -702,8 +872,8 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   String expectedTopic = String(mqtt_topic_cmd) + String(DEVICE_ID);
   
   if (topicStr == expectedTopic) {
-    // Parse JSON command
-    StaticJsonDocument<1024> doc;  
+    // Parse JSON command - ใช้ StaticJsonDocument ตามต้นฉบับเดิม
+    StaticJsonDocument<1024> doc;
     DeserializationError error = deserializeJson(doc, message);
     
     if (error) {
@@ -888,9 +1058,24 @@ void controlRelay()
    *
   */
 
-  int sensorStatus;
+  int retries = 0;
+  int sensorStatus = -1;
 
-  sensorStatus = readSensorData();  // 0 is OK
+  // ลองอ่านค่าเซ็นเซอร์สูงสุด 3 ครั้ง
+  while (sensorStatus != 0 && retries < 3) {
+    sensorStatus = readSensorData();
+    if (sensorStatus != 0) {
+      Serial.print("Sensor read failed, retry: ");
+      Serial.println(retries + 1);
+      delay(100);
+      retries++;
+    }
+  }
+
+  if (sensorStatus != 0) {
+    Serial.println("Sensor read failed after multiple attempts");
+    return;  // ไม่ดำเนินการต่อถ้าอ่านเซ็นเซอร์ไม่สำเร็จ
+  }
 
   if (AUTO) {
     Serial.print("\tOptions : ");
@@ -1088,6 +1273,30 @@ void controlRelay()
   }
 
 
+}
+
+// 5. เพิ่มฟังก์ชัน stopTimers สำหรับหยุด timer ที่กำลังทำงาน
+void stopTimers() {
+  // ตรวจสอบและหยุด timer ที่กำลังทำงาน
+  if (afterStart != -1) {
+    t_relay.stop(afterStart);
+    afterStart = -1;
+  }
+  
+  if (afterStop != -1) {
+    t_delayStart.stop(afterStop);
+    afterStop = -1;
+  }
+  
+  if (afterStart2 != -1) {
+    t_relay2.stop(afterStart2);
+    afterStart2 = -1;
+  }
+  
+  if (afterStop2 != -1) {
+    t_delayStart2.stop(afterStop2);
+    afterStop2 = -1;
+  }
 }
 
 int readSensorData() 
