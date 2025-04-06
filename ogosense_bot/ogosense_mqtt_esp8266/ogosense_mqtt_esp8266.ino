@@ -626,7 +626,9 @@ void processCommand(StaticJsonDocument<1024>& doc) {
         data["mode"] = AUTO ? "auto" : "manual";
         data["option"] = options;
         data["cool"] = COOL;
+        data["moisture"] = MOISTURE;
         data["thingspeak_channel"] = channelID;
+        data["write_api_key"] = writeAPIKey;
         
         response["message"] = "Device information retrieved";
       } else {
@@ -653,7 +655,7 @@ void sendMqttResponse(const String& command, JsonDocument& response) {
   size_t len = measureJson(response);
   
   // ตรวจสอบขนาดก่อนส่ง
-  if (len > 256) {  // หรือตามขนาด buffer ที่คิดว่าปลอดภัย
+  if (len > 400) {  // หรือตามขนาด buffer ที่คิดว่าปลอดภัย
     Serial.println("Warning: Response too large, trimming data");
     // ลดขนาดข้อมูล โดยการลบฟิลด์ที่ไม่จำเป็น
     if (response.containsKey("data")) {
