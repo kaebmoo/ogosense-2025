@@ -218,8 +218,8 @@ void syncTime() {
 void connectToMQTT() {
   int retries = 0;
   while (!mqtt.connected() && retries < 5) {
-    // String client_id = "esp32-client-" + String(WiFi.macAddress()); // 59321
-    String client_id = "esp32-telegram-broker-" + String(DEVICE_ID); // 59321
+    // String client_id = "esp32-client-" + String(WiFi.macAddress()); // 59322
+    String client_id = "esp32-telegram-broker-" + String(DEVICE_ID); // 59322
     Serial.print("เชื่อมต่อ MQTT (client_id: ");
     Serial.print(client_id);
     Serial.print(")... ");
