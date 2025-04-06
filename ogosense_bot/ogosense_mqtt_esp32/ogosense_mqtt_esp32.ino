@@ -126,7 +126,7 @@ void setup() {
   mqtt.setServer(mqtt_broker, mqtt_port);
   mqtt.setCallback(mqttCallback);
   connectToMQTT();
-  
+  mqtt.subscribe(mqtt_topic_resp);
 
   bot_lasttime = millis();
   blinker.attach(1.0, blink);  // เรียก blink() ทุก 1 วินาที
@@ -243,31 +243,185 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
   // ตรวจสอบว่าเป็นการตอบกลับจากอุปกรณ์หรือไม่
   String topicStr = String(topic);
   if (topicStr.startsWith("ogosense/resp/")) {
-    // แปลง payload เป็น JSON
-    StaticJsonDocument<512> doc;
-    deserializeJson(doc, message);
+    // แยก device ID จาก topic
+    String deviceId = topicStr.substring(14); // ตัด "ogosense/resp/" ออก
     
-    // ตรวจสอบ device_id และคำสั่ง
-    if (doc.containsKey("device_id") && doc.containsKey("command")) {
-      String deviceId = doc["device_id"].as<String>();
+    // แปลง payload เป็น JSON
+    StaticJsonDocument<1024> doc;
+    DeserializationError error = deserializeJson(doc, message);
+    
+    if (error) {
+      Serial.print("deserializeJson() ล้มเหลว: ");
+      Serial.println(error.c_str());
+      return;
+    }
+    
+    // ตรวจสอบว่ามี device_id จาก payload ด้วยหรือไม่
+    if (doc.containsKey("device_id")) {
+      deviceId = doc["device_id"].as<String>();
+    }
+    
+    // ตรวจสอบคำสั่งที่ได้รับตอบกลับ
+    if (doc.containsKey("command")) {
       String command = doc["command"].as<String>();
+      bool success = doc.containsKey("success") ? doc["success"].as<bool>() : false;
       
-      // สร้างข้อความตอบกลับไปยัง Telegram (ถ้าต้องการ)
-      String telegramResponse = "ได้รับการตอบกลับจากอุปกรณ์ " + deviceId + "\n";
-      telegramResponse += "คำสั่ง: " + command + "\n";
+      // สร้างข้อความตอบกลับไปยัง Telegram
+      String telegramResponse = "การตอบกลับจากอุปกรณ์ " + deviceId + "\n";
       
-      // เพิ่มข้อมูลเพิ่มเติมตามประเภทคำสั่ง
-      if (command == "status" && doc.containsKey("data")) {
-        telegramResponse += "อุณหภูมิ: " + String(doc["data"]["temperature"].as<float>()) + "°C\n";
-        telegramResponse += "ความชื้น: " + String(doc["data"]["humidity"].as<float>()) + "%\n";
-        telegramResponse += "สถานะ Relay: " + String(doc["data"]["relay"] ? "ON" : "OFF") + "\n";
+      // ตรวจสอบสถานะความสำเร็จ
+      if (success) {
+        telegramResponse += "สถานะ: สำเร็จ\n";
+      } else {
+        telegramResponse += "สถานะ: ไม่สำเร็จ\n";
+        if (doc.containsKey("message")) {
+          telegramResponse += "ข้อความ: " + doc["message"].as<String>() + "\n";
+        }
       }
       
-      // ส่งข้อความไปยัง Telegram (อาจต้องเก็บ chat_id ไว้ในตอนที่รับคำสั่ง)
-      // ในที่นี้ส่งไปยัง CHAT_ID เป็นตัวอย่าง
-      bot.sendMessage(CHAT_ID, telegramResponse, "");
+      // เพิ่มข้อมูลตามประเภทคำสั่ง
+      if (command == "status" && doc.containsKey("data")) {
+        if (doc["data"].containsKey("temperature")) 
+          telegramResponse += "อุณหภูมิ: " + String(doc["data"]["temperature"].as<float>()) + " °C\n";
+        
+        if (doc["data"].containsKey("humidity")) 
+          telegramResponse += "ความชื้น: " + String(doc["data"]["humidity"].as<float>()) + " %\n";
+        
+        if (doc["data"].containsKey("relay")) 
+          telegramResponse += "สถานะ Relay: " + String(doc["data"]["relay"].as<bool>() ? "เปิด" : "ปิด") + "\n";
+        
+        if (doc["data"].containsKey("mode")) 
+          telegramResponse += "โหมด: " + doc["data"]["mode"].as<String>() + "\n";
+          
+        if (doc["data"].containsKey("name")) 
+          telegramResponse += "ชื่ออุปกรณ์: " + doc["data"]["name"].as<String>() + "\n";
+          
+        if (doc["data"].containsKey("option")) 
+          telegramResponse += "ตัวเลือก: " + String(doc["data"]["option"].as<int>()) + "\n";
+      }
+      else if ((command == "settemp" || command == "sethum") && doc.containsKey("data")) {
+        if (doc["data"].containsKey("low") && doc["data"].containsKey("high")) {
+          float low = doc["data"]["low"].as<float>();
+          float high = doc["data"]["high"].as<float>();
+          
+          if (command == "settemp") {
+            telegramResponse += "ตั้งค่าอุณหภูมิ:\n";
+            telegramResponse += "ต่ำสุด: " + String(low) + " °C\n";
+            telegramResponse += "สูงสุด: " + String(high) + " °C\n";
+          } else {
+            telegramResponse += "ตั้งค่าความชื้น:\n";
+            telegramResponse += "ต่ำสุด: " + String(low) + " %\n";
+            telegramResponse += "สูงสุด: " + String(high) + " %\n";
+          }
+        }
+      }
+      else if (command == "setmode" && doc.containsKey("data")) {
+        if (doc["data"].containsKey("mode")) {
+          telegramResponse += "ตั้งค่าโหมด: " + doc["data"]["mode"].as<String>() + "\n";
+        }
+      }
+      else if (command == "setoption" && doc.containsKey("data")) {
+        if (doc["data"].containsKey("option")) {
+          telegramResponse += "ตั้งค่าตัวเลือก: " + String(doc["data"]["option"].as<int>()) + "\n";
+        }
+      }
+      else if (command == "relay" && doc.containsKey("data")) {
+        if (doc["data"].containsKey("relay")) {
+          telegramResponse += "ตั้งค่า Relay: " + String(doc["data"]["relay"].as<bool>() ? "เปิด" : "ปิด") + "\n";
+        }
+      }
+      else if (command == "setname" && doc.containsKey("data")) {
+        if (doc["data"].containsKey("name")) {
+          telegramResponse += "ตั้งชื่ออุปกรณ์: " + doc["data"]["name"].as<String>() + "\n";
+        }
+      }
+      else if (command == "setchannel" && doc.containsKey("data")) {
+        if (doc["data"].containsKey("channel_id")) {
+          telegramResponse += "ตั้งค่า ThingSpeak Channel ID: " + String(doc["data"]["channel_id"].as<unsigned long>()) + "\n";
+        }
+      }
+      else if (command == "setwritekey" || command == "setreadkey") {
+        String keyType = (command == "setwritekey") ? "Write API Key" : "Read API Key";
+        telegramResponse += "ตั้งค่า " + keyType + " สำเร็จ\n";
+      }
+      else if (command == "info" && doc.containsKey("data")) {
+        telegramResponse += "ข้อมูลอุปกรณ์:\n";
+        
+        if (doc["data"].containsKey("name"))
+          telegramResponse += "ชื่อ: " + doc["data"]["name"].as<String>() + "\n";
+        
+        if (doc["data"].containsKey("device_id"))
+          telegramResponse += "Device ID: " + doc["data"]["device_id"].as<String>() + "\n";
+        
+        if (doc["data"].containsKey("temp_low") && doc["data"].containsKey("temp_high"))
+          telegramResponse += "อุณหภูมิ: " + String(doc["data"]["temp_low"].as<float>()) + "-" + 
+                              String(doc["data"]["temp_high"].as<float>()) + " °C\n";
+        
+        if (doc["data"].containsKey("humidity_low") && doc["data"].containsKey("humidity_high"))
+          telegramResponse += "ความชื้น: " + String(doc["data"]["humidity_low"].as<float>()) + "-" + 
+                              String(doc["data"]["humidity_high"].as<float>()) + " %\n";
+        
+        if (doc["data"].containsKey("mode"))
+          telegramResponse += "โหมด: " + doc["data"]["mode"].as<String>() + "\n";
+        
+        if (doc["data"].containsKey("option"))
+          telegramResponse += "ตัวเลือก: " + String(doc["data"]["option"].as<int>()) + "\n";
+        
+        if (doc["data"].containsKey("cool"))
+          telegramResponse += "เป็นเครื่องทำความเย็น: " + String(doc["data"]["cool"].as<bool>() ? "ใช่" : "ไม่ใช่") + "\n";
+        
+        if (doc["data"].containsKey("thingspeak_channel"))
+          telegramResponse += "ThingSpeak Channel: " + String(doc["data"]["thingspeak_channel"].as<unsigned long>()) + "\n";
+      }
+
+      // ส่งข้อความไปยัง Telegram
+      // สำหรับ chat_id เราต้องการให้ส่งกลับไปยัง chat_id ที่ส่งคำสั่งมา
+      // ในที่นี้จะใช้ ADMIN_CHAT_ID เป็นตัวอย่าง (ควรเก็บ chat_id ไว้ก่อนหน้านี้)
+      String chat_id = getLastChatId(deviceId, command);
+      if (chat_id.length() > 0) {
+        bot.sendMessage(chat_id, telegramResponse, "");
+        Serial.println("ส่งข้อความไปยัง Telegram: " + telegramResponse);
+      } else {
+        Serial.println("ไม่พบ chat_id ที่เกี่ยวข้อง");
+      }
     }
   }
+}
+
+// ฟังก์ชันค้นหา chat_id ล่าสุดที่ส่งคำสั่งไปยังอุปกรณ์
+// ฟังก์ชันบันทึกคำสั่งใหม่
+void recordCommand(String deviceId, String command, String chatId) {
+  commandHistory[commandHistoryIndex].deviceId = deviceId;
+  commandHistory[commandHistoryIndex].command = command;
+  commandHistory[commandHistoryIndex].chatId = chatId;
+  commandHistory[commandHistoryIndex].timestamp = millis();
+  
+  commandHistoryIndex = (commandHistoryIndex + 1) % MAX_COMMAND_HISTORY;
+}
+
+// ฟังก์ชันค้นหา chat_id จากคำสั่งล่าสุด
+String getLastChatId(String deviceId, String command) {
+  unsigned long currentTime = millis();
+  unsigned long newestTime = 0;
+  int bestMatch = -1;
+  
+  for (int i = 0; i < MAX_COMMAND_HISTORY; i++) {
+    if (commandHistory[i].deviceId == deviceId && 
+        commandHistory[i].command == command) {
+      // หาคำสั่งล่าสุด
+      if (commandHistory[i].timestamp > newestTime) {
+        newestTime = commandHistory[i].timestamp;
+        bestMatch = i;
+      }
+    }
+  }
+  
+  if (bestMatch != -1) {
+    return commandHistory[bestMatch].chatId;
+  }
+  
+  // หากไม่พบ ใช้ chat_id แรกในรายการที่อนุญาต
+  return authorizedChatIds[0];
 }
 
 // ตรวจสอบว่าข้อความเป็นตัวเลขหรือไม่
@@ -290,6 +444,59 @@ bool isNumeric(const String& str) {
   }
 
   return true;
+}
+
+// ฟังก์ชันช่วยนับจำนวนพารามิเตอร์ โดยไม่สนใจช่องว่างติดกัน
+int countParams(String text) {
+  text.trim(); // ตัดช่องว่างต้น-ท้าย
+  
+  int count = 0;
+  bool inWord = false;
+  
+  for (unsigned int i = 0; i < text.length(); i++) {
+    if (text.charAt(i) == ' ') {
+      if (inWord) {
+        inWord = false;
+      }
+    } else {
+      if (!inWord) {
+        count++;
+        inWord = true;
+      }
+    }
+  }
+  
+  return count;
+}
+
+// ฟังก์ชันช่วยสำหรับตัดช่องว่างและแยกพารามิเตอร์
+String getParamAtIndex(String text, int index) {
+  text.trim(); // ตัดช่องว่างต้น-ท้าย
+  
+  int currentIndex = 0;
+  int startPos = 0;
+  bool inWord = false;
+  
+  for (unsigned int i = 0; i <= text.length(); i++) {
+    if (i == text.length() || text.charAt(i) == ' ') {
+      if (inWord) {
+        // เจอจุดสิ้นสุดของคำ
+        if (currentIndex == index) {
+          return text.substring(startPos, i);
+        }
+        currentIndex++;
+        inWord = false;
+      }
+    } else {
+      if (!inWord) {
+        // เริ่มต้นคำใหม่
+        startPos = i;
+        inWord = true;
+      }
+    }
+  }
+  
+  return ""; // ไม่พบพารามิเตอร์ตามตำแหน่งที่ต้องการ
 }
 
 // เพิ่มฟังก์ชันสำหรับตรวจสอบ Device ID ของ ESP32
@@ -345,18 +552,20 @@ void handleNewMessages(int numNewMessages) {
       continue;
     }
 
-    // แยกพารามิเตอร์หลังช่องว่างแรก
-    String params = text.substring(firstSpace + 1);
-    int space1 = params.indexOf(' ');
-
-    // ตรวจสอบ device_id
-    String deviceIdStr;
-    if (space1 == -1) {
-      deviceIdStr = params;
-    } else {
-      deviceIdStr = params.substring(0, space1);
+    // แยกคำสั่งและพารามิเตอร์
+    String command = text.substring(0, firstSpace);
+    String paramsString = text.substring(firstSpace + 1);
+    paramsString.trim(); // ตัดช่องว่างหน้าหลัง
+    
+    // ตรวจสอบว่ามีพารามิเตอร์เพียงพอหรือไม่
+    int paramCount = countParams(paramsString);
+    if (paramCount == 0) {
+      bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: ต้องมี device ID", "");
+      continue;
     }
-    deviceIdStr.trim();
+    
+    // ดึง device_id (พารามิเตอร์แรกเสมอ)
+    String deviceIdStr = getParamAtIndex(paramsString, 0);
     
     if (!isNumeric(deviceIdStr)) {
       bot.sendMessage(chat_id, "Device ID ต้องเป็นตัวเลขเท่านั้น", "");
@@ -367,7 +576,7 @@ void handleNewMessages(int numNewMessages) {
     String deviceIdStr2 = String(deviceId);  // เพื่อแน่ใจว่าเป็นตัวเลขล้วน
 
     // ---------- คำสั่ง /status ----------
-    if (text.startsWith("/status")) {
+    if (command == "/status") {
       // สร้าง JSON สำหรับ MQTT
       StaticJsonDocument<200> doc;
       doc["command"] = "status";
@@ -382,28 +591,21 @@ void handleNewMessages(int numNewMessages) {
       if (mqtt.publish(topic.c_str(), jsonStr.c_str())) {
         bot.sendMessage(chat_id, "กำลังตรวจสอบสถานะอุปกรณ์ " + deviceIdStr2, "");
         Serial.println("ส่งคำสั่ง status ไปยัง MQTT สำเร็จ: " + jsonStr);
+        recordCommand(deviceIdStr2, "status", chat_id);
       } else {
         bot.sendMessage(chat_id, "เกิดข้อผิดพลาดในการส่งคำสั่ง", "");
         Serial.println("ส่งคำสั่งไปยัง MQTT ล้มเหลว");
       }
     }
     // ---------- คำสั่ง /settemp ----------
-    else if (text.startsWith("/settemp")) {
-      if (space1 == -1) {
+    else if (command == "/settemp") {
+      if (paramCount < 3) { 
         bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /settemp <id> <lowTemp> <highTemp>", "");
         continue;
       }
       
-      String restParams = params.substring(space1 + 1);
-      int space2 = restParams.indexOf(' ');
-      
-      if (space2 == -1) {
-        bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /settemp <id> <lowTemp> <highTemp>", "");
-        continue;
-      }
-      
-      String lowTempStr = restParams.substring(0, space2);
-      String highTempStr = restParams.substring(space2 + 1);
+      String lowTempStr = getParamAtIndex(paramsString, 1);
+      String highTempStr = getParamAtIndex(paramsString, 2);
       
       if (!isNumeric(lowTempStr) || !isNumeric(highTempStr)) {
         bot.sendMessage(chat_id, "ค่าอุณหภูมิต้องเป็นตัวเลข", "");
@@ -441,6 +643,7 @@ void handleNewMessages(int numNewMessages) {
       if (mqtt.publish(topic.c_str(), jsonStr.c_str())) {
         bot.sendMessage(chat_id, "ตั้งค่าอุณหภูมิสำหรับอุปกรณ์ " + deviceIdStr2 + "\nLow: " + lowTempStr + "°C, High: " + highTempStr + "°C", "");
         Serial.println("ส่งคำสั่ง settemp ไปยัง MQTT สำเร็จ: " + jsonStr);
+        recordCommand(deviceIdStr2, "settemp", chat_id);
       } else {
         bot.sendMessage(chat_id, "เกิดข้อผิดพลาดในการส่งคำสั่ง", "");
         Serial.println("ส่งคำสั่งไปยัง MQTT ล้มเหลว");
@@ -448,22 +651,14 @@ void handleNewMessages(int numNewMessages) {
     }
 
     // ---------- คำสั่ง /sethum ----------
-    else if (text.startsWith("/sethum")) {
-      if (space1 == -1) {
+    else if (command == "/sethum") {
+      if (paramCount < 3) { 
         bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /sethum <id> <lowHumidity> <highHumidity>", "");
         continue;
       }
       
-      String restParams = params.substring(space1 + 1);
-      int space2 = restParams.indexOf(' ');
-      
-      if (space2 == -1) {
-        bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /sethum <id> <lowHumidity> <highHumidity>", "");
-        continue;
-      }
-      
-      String lowHumStr = restParams.substring(0, space2);
-      String highHumStr = restParams.substring(space2 + 1);
+      String lowHumStr = getParamAtIndex(paramsString, 1);
+      String highHumStr = getParamAtIndex(paramsString, 2);
       
       if (!isNumeric(lowHumStr) || !isNumeric(highHumStr)) {
         bot.sendMessage(chat_id, "ค่าความชื้นต้องเป็นตัวเลข", "");
@@ -501,6 +696,7 @@ void handleNewMessages(int numNewMessages) {
       if (mqtt.publish(topic.c_str(), jsonStr.c_str())) {
         bot.sendMessage(chat_id, "ตั้งค่าความชื้นสำหรับอุปกรณ์ " + deviceIdStr2 + "\nLow: " + lowHumStr + "%, High: " + highHumStr + "%", "");
         Serial.println("ส่งคำสั่ง sethum ไปยัง MQTT สำเร็จ: " + jsonStr);
+        recordCommand(deviceIdStr2, "sethum", chat_id);
       } else {
         bot.sendMessage(chat_id, "เกิดข้อผิดพลาดในการส่งคำสั่ง", "");
         Serial.println("ส่งคำสั่งไปยัง MQTT ล้มเหลว");
@@ -508,13 +704,13 @@ void handleNewMessages(int numNewMessages) {
     }
     
     // ---------- คำสั่ง /setmode ----------
-    else if (text.startsWith("/setmode")) {
-      if (space1 == -1) {
+    else if (command == "/setmode") {
+      if (paramCount < 2) {
         bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /setmode <id> <auto/manual>", "");
         continue;
       }
       
-      String modeStr = params.substring(space1 + 1);
+      String modeStr = getParamAtIndex(paramsString, 1);
       modeStr.trim();
       modeStr.toLowerCase();
       
@@ -538,6 +734,7 @@ void handleNewMessages(int numNewMessages) {
       if (mqtt.publish(topic.c_str(), jsonStr.c_str())) {
         bot.sendMessage(chat_id, "ตั้งค่าโหมดสำหรับอุปกรณ์ " + deviceIdStr2 + " เป็น " + modeStr, "");
         Serial.println("ส่งคำสั่ง setmode ไปยัง MQTT สำเร็จ: " + jsonStr);
+        recordCommand(deviceIdStr2, "setmode", chat_id);
       } else {
         bot.sendMessage(chat_id, "เกิดข้อผิดพลาดในการส่งคำสั่ง", "");
         Serial.println("ส่งคำสั่งไปยัง MQTT ล้มเหลว");
@@ -545,13 +742,13 @@ void handleNewMessages(int numNewMessages) {
     }
     
     // ---------- คำสั่ง /setoption ----------
-    else if (text.startsWith("/setoption")) {
-      if (space1 == -1) {
+    else if (command == "/setoption") {
+      if (paramCount < 2) {
         bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /setoption <id> <0-4>", "");
         continue;
       }
       
-      String optionStr = params.substring(space1 + 1);
+      String optionStr = getParamAtIndex(paramsString, 1);
       optionStr.trim();
       
       if (!isNumeric(optionStr) || optionStr.toInt() < 0 || optionStr.toInt() > 4) {
@@ -576,6 +773,7 @@ void handleNewMessages(int numNewMessages) {
       if (mqtt.publish(topic.c_str(), jsonStr.c_str())) {
         bot.sendMessage(chat_id, "ตั้งค่า Option สำหรับอุปกรณ์ " + deviceIdStr2 + " เป็น " + optionStr, "");
         Serial.println("ส่งคำสั่ง setoption ไปยัง MQTT สำเร็จ: " + jsonStr);
+        recordCommand(deviceIdStr2, "setoption", chat_id);
       } else {
         bot.sendMessage(chat_id, "เกิดข้อผิดพลาดในการส่งคำสั่ง", "");
         Serial.println("ส่งคำสั่งไปยัง MQTT ล้มเหลว");
@@ -583,13 +781,13 @@ void handleNewMessages(int numNewMessages) {
     }
     
     // ---------- คำสั่ง /relay ----------
-    else if (text.startsWith("/relay")) {
-      if (space1 == -1) {
+    else if (command == "/relay") {
+      if (paramCount < 2) {
         bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /relay <id> <0/1>", "");
         continue;
       }
       
-      String stateStr = params.substring(space1 + 1);
+      String stateStr = getParamAtIndex(paramsString, 1);
       stateStr.trim();
       
       if (!isNumeric(stateStr) || (stateStr != "0" && stateStr != "1")) {
@@ -614,6 +812,7 @@ void handleNewMessages(int numNewMessages) {
       if (mqtt.publish(topic.c_str(), jsonStr.c_str())) {
         bot.sendMessage(chat_id, "ตั้งค่า Relay สำหรับอุปกรณ์ " + deviceIdStr2 + " เป็น " + (state ? "ON" : "OFF"), "");
         Serial.println("ส่งคำสั่ง relay ไปยัง MQTT สำเร็จ: " + jsonStr);
+        recordCommand(deviceIdStr2, "relay", chat_id);
       } else {
         bot.sendMessage(chat_id, "เกิดข้อผิดพลาดในการส่งคำสั่ง", "");
         Serial.println("ส่งคำสั่งไปยัง MQTT ล้มเหลว");
@@ -621,13 +820,19 @@ void handleNewMessages(int numNewMessages) {
     }
     
     // ---------- คำสั่ง /setname ----------
-    else if (text.startsWith("/setname")) {
-      if (space1 == -1) {
+    else if (command == "/setname") {
+      if (paramCount < 2) {
         bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /setname <id> <name>", "");
         continue;
       }
       
-      String name = params.substring(space1 + 1);
+      // ในกรณีของ setname เราต้องการรวมทุกคำหลัง deviceId เป็นชื่อเดียว
+      // ตัดคำสั่งและ deviceId ออกเพื่อให้เหลือแค่ name
+      int cmdLength = command.length() + 1; // +1 for the space
+      int deviceIdLength = deviceIdStr.length() + 1; // +1 for the space
+      int startPos = text.indexOf(deviceIdStr) + deviceIdLength;
+      
+      String name = text.substring(startPos);
       name.trim();
       
       if (name.length() == 0) {
@@ -650,6 +855,7 @@ void handleNewMessages(int numNewMessages) {
       if (mqtt.publish(topic.c_str(), jsonStr.c_str())) {
         bot.sendMessage(chat_id, "ตั้งชื่ออุปกรณ์ " + deviceIdStr2 + " เป็น: " + name, "");
         Serial.println("ส่งคำสั่ง setname ไปยัง MQTT สำเร็จ: " + jsonStr);
+        recordCommand(deviceIdStr2, "setname", chat_id);
       } else {
         bot.sendMessage(chat_id, "เกิดข้อผิดพลาดในการส่งคำสั่ง", "");
         Serial.println("ส่งคำสั่งไปยัง MQTT ล้มเหลว");
@@ -657,13 +863,13 @@ void handleNewMessages(int numNewMessages) {
     }
     
     // ---------- คำสั่ง /setchannel ----------
-    else if (text.startsWith("/setchannel")) {
-      if (space1 == -1) {
+    else if (command == "/setchannel") {
+      if (paramCount < 2) {
         bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /setchannel <id> <channel_id>", "");
         continue;
       }
       
-      String channelIdStr = params.substring(space1 + 1);
+      String channelIdStr = getParamAtIndex(paramsString, 1);
       channelIdStr.trim();
       
       if (!isNumeric(channelIdStr)) {
@@ -688,6 +894,7 @@ void handleNewMessages(int numNewMessages) {
       if (mqtt.publish(topic.c_str(), jsonStr.c_str())) {
         bot.sendMessage(chat_id, "ตั้งค่า ThingSpeak Channel ID สำหรับอุปกรณ์ " + deviceIdStr2 + " เป็น " + channelIdStr, "");
         Serial.println("ส่งคำสั่ง setchannel ไปยัง MQTT สำเร็จ: " + jsonStr);
+        recordCommand(deviceIdStr2, "setchannel", chat_id);
       } else {
         bot.sendMessage(chat_id, "เกิดข้อผิดพลาดในการส่งคำสั่ง", "");
         Serial.println("ส่งคำสั่งไปยัง MQTT ล้มเหลว");
@@ -695,17 +902,23 @@ void handleNewMessages(int numNewMessages) {
     }
     
     // ---------- คำสั่ง /setwritekey และ /setreadkey ----------
-    else if (text.startsWith("/setwritekey") || text.startsWith("/setreadkey")) {
-      bool isWriteKey = text.startsWith("/setwritekey");
+    else if (command == "/setwritekey" || command == "/setreadkey") {
+    
+      bool isWriteKey = (command == "/setwritekey");
       String commandName = isWriteKey ? "setwritekey" : "setreadkey";
       String displayName = isWriteKey ? "Write API Key" : "Read API Key";
       
-      if (space1 == -1) {
+      if (paramCount < 2) {
         bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /" + commandName + " <id> <api_key>", "");
         continue;
       }
       
-      String apiKey = params.substring(space1 + 1);
+      // สำหรับ API key เราต้องการรวมทุกคำหลัง deviceId เป็น key เดียว
+      int cmdLength = command.length() + 1; // +1 for the space
+      int deviceIdLength = deviceIdStr.length() + 1; // +1 for the space
+      int startPos = text.indexOf(deviceIdStr) + deviceIdLength;
+      
+      String apiKey = text.substring(startPos);
       apiKey.trim();
       
       if (apiKey.length() == 0) {
@@ -728,6 +941,7 @@ void handleNewMessages(int numNewMessages) {
       if (mqtt.publish(topic.c_str(), jsonStr.c_str())) {
         bot.sendMessage(chat_id, "ตั้งค่า " + displayName + " สำหรับอุปกรณ์ " + deviceIdStr2 + " เรียบร้อย", "");
         Serial.println("ส่งคำสั่ง " + commandName + " ไปยัง MQTT สำเร็จ: " + jsonStr);
+        recordCommand(deviceIdStr2, commandName, chat_id);
       } else {
         bot.sendMessage(chat_id, "เกิดข้อผิดพลาดในการส่งคำสั่ง", "");
         Serial.println("ส่งคำสั่งไปยัง MQTT ล้มเหลว");
@@ -735,13 +949,13 @@ void handleNewMessages(int numNewMessages) {
     }
 
     // ---------- คำสั่ง /info ----------
-    else if (text.startsWith("/info")) {
-      if (space1 == -1) {
+    else if (command == "/info") {
+      if (paramCount < 2) {
         bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /info <id> <secret>", "");
         continue;
       }
       
-      String secretParams = params.substring(space1 + 1);
+      String secretParams = getParamAtIndex(paramsString, 1);
       secretParams.trim();
       
       if (secretParams.length() == 0) {
@@ -764,6 +978,7 @@ void handleNewMessages(int numNewMessages) {
       if (mqtt.publish(topic.c_str(), jsonStr.c_str())) {
         bot.sendMessage(chat_id, "กำลังเรียกข้อมูลของอุปกรณ์ " + deviceIdStr2, "");
         Serial.println("ส่งคำสั่ง info ไปยัง MQTT สำเร็จ: " + jsonStr);
+        recordCommand(deviceIdStr2, "info", chat_id);
       } else {
         bot.sendMessage(chat_id, "เกิดข้อผิดพลาดในการส่งคำสั่ง", "");
         Serial.println("ส่งคำสั่งไปยัง MQTT ล้มเหลว");
@@ -773,19 +988,19 @@ void handleNewMessages(int numNewMessages) {
     // --------------- คำสั่งจัดการ ChatID ที่ต้องตรวจสอบ ESP32 Device ID ก่อน ---------------
     
     // ---------- คำสั่ง /addchatid ----------
-    else if (text.startsWith("/addchatid")) {
+    else if (command == "/addchatid") {
       // ตรวจสอบ device ID ก่อนทำคำสั่ง
       if (!checkDeviceId(deviceIdStr2)) {
         bot.sendMessage(chat_id, "Device ID ไม่ถูกต้อง สำหรับ ESP32 Bridge นี้", "");
         continue;
       }
       
-      if (space1 == -1) {
+      if (paramCount < 2) {
         bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /addchatid <esp32_id> <chat_id>", "");
         continue;
       }
       
-      String newChatId = params.substring(space1 + 1);
+      String newChatId = getParamAtIndex(paramsString, 1);
       newChatId.trim();
       
       if (!isNumeric(newChatId)) {
@@ -826,30 +1041,21 @@ void handleNewMessages(int numNewMessages) {
       Serial.println("เพิ่ม Chat ID: " + newChatId + " สำเร็จ");
     }
     // ---------- คำสั่ง /updatechatid ----------
-    else if (text.startsWith("/updatechatid")) {
+    else if (command == "/updatechatid") {
       // ตรวจสอบ device ID ก่อนทำคำสั่ง
       if (!checkDeviceId(deviceIdStr2)) {
         bot.sendMessage(chat_id, "Device ID ไม่ถูกต้อง สำหรับ ESP32 Bridge นี้", "");
         continue;
       }
       
-      if (space1 == -1) {
+      if (paramCount < 4) {
         bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /updatechatid <esp32_id> <index(3-5)> <old_chatid> <new_chatid>", "");
         continue;
       }
       
-      String restParams = params.substring(space1 + 1);
-      int space2 = restParams.indexOf(' ');
-      int space3 = restParams.indexOf(' ', space2 + 1);
-      
-      if (space2 == -1 || space3 == -1) {
-        bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /updatechatid <esp32_id> <index(3-5)> <old_chatid> <new_chatid>", "");
-        continue;
-      }
-      
-      String indexStr = restParams.substring(0, space2);
-      String oldChatId = restParams.substring(space2 + 1, space3);
-      String newChatId = restParams.substring(space3 + 1);
+      String indexStr = getParamAtIndex(paramsString, 1);
+      String oldChatId = getParamAtIndex(paramsString, 2);
+      String newChatId = getParamAtIndex(paramsString, 3);
       
       indexStr.trim();
       oldChatId.trim();
@@ -891,28 +1097,20 @@ void handleNewMessages(int numNewMessages) {
     }
 
     // ---------- คำสั่ง /removechatid ----------
-    else if (text.startsWith("/removechatid")) {
+    else if (command == "/removechatid") {
       // ตรวจสอบ device ID ก่อนทำคำสั่ง
       if (!checkDeviceId(deviceIdStr2)) {
         bot.sendMessage(chat_id, "Device ID ไม่ถูกต้อง สำหรับ ESP32 Bridge นี้", "");
         continue;
       }
       
-      if (space1 == -1) {
+      if (paramCount < 3) {
         bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /removechatid <esp32_id> <index(3-5)> <old_id>", "");
         continue;
       }
       
-      String restParams = params.substring(space1 + 1);
-      int space2 = restParams.indexOf(' ');
-      
-      if (space2 == -1) {
-        bot.sendMessage(chat_id, "รูปแบบคำสั่งไม่ถูกต้อง: /removechatid <esp32_id> <index(3-5)> <old_id>", "");
-        continue;
-      }
-      
-      String indexStr = restParams.substring(0, space2);
-      String oldChatId = restParams.substring(space2 + 1);
+      String indexStr = getParamAtIndex(paramsString, 1);
+      String oldChatId = getParamAtIndex(paramsString, 2);
       
       indexStr.trim();
       oldChatId.trim();
@@ -961,7 +1159,7 @@ void handleNewMessages(int numNewMessages) {
     }
     
     // ---------- คำสั่ง /listchatids ----------
-    else if (text.startsWith("/listchatids")) {
+    else if (command == "/listchatids") {
       // ตรวจสอบ device ID ก่อนทำคำสั่ง
       if (!checkDeviceId(deviceIdStr2)) {
         bot.sendMessage(chat_id, "Device ID ไม่ถูกต้อง สำหรับ ESP32 Bridge นี้", "");
@@ -978,7 +1176,7 @@ void handleNewMessages(int numNewMessages) {
     }
     
     // ---------- คำสั่ง /help หรือกรณีไม่รู้จักคำสั่ง ----------
-    else if (text.startsWith("/help")) {
+    else if (command == "/help") {
       bot.sendMessage(chat_id, HELP_MESSAGE, "");
     } else {
       bot.sendMessage(chat_id, "ไม่รู้จักคำสั่งนี้\nพิมพ์ /help เพื่อดูรายการคำสั่งทั้งหมด", "");
