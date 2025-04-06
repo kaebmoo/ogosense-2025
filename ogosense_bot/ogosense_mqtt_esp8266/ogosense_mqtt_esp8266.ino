@@ -62,8 +62,9 @@ SOFTWARE.
 #include <SPI.h>
 #include <EEPROM.h>
 #include <ArduinoJson.h>
+#include <umm_malloc/umm_heap_select.h>
 
-#define MQTT_MAX_PACKET_SIZE 2048
+#define MQTT_MAX_PACKET_SIZE 512
 #include <PubSubClient.h>
 #include <Timer.h>  //https://github.com/JChristensen/Timer
 #include <Ticker.h>  //Ticker Library
@@ -73,6 +74,7 @@ SOFTWARE.
 WiFiClient client;  // ใช้กับ thinkspeak
 WiFiClientSecure mqttClient;
 PubSubClient mqtt(mqttClient);
+BearSSL::X509List mqtt_cert(ca_cert);
 
 // NTP และเวลา
 const char* ntpServer = "pool.ntp.org";
@@ -246,13 +248,16 @@ void setup() {
   buzzer_sound();     // เสียง buzzer
 
   // ตั้งค่า SSL สำหรับ MQTT
-  X509List mqtt_cert(ca_cert);
+  // X509List mqtt_cert(ca_cert);
+  // mqttClient.setTrustAnchors(&mqtt_cert);
+
   mqttClient.setTrustAnchors(&mqtt_cert);
 
   // ตั้งค่า MQTT
   mqtt.setServer(mqtt_server, mqtt_port);
   mqtt.setCallback(mqttCallback);
-  mqttClient.setBufferSizes(2048, 2048);
+  // mqttClient.setBufferSizes(2048, 2048);
+  mqttClient.setBufferSizes(512, 512);
   mqtt.setBufferSize(2048);
 
   #ifdef THINGSPEAK
@@ -266,7 +271,9 @@ void setup() {
   watchdogTicker.attach(60, checkSystem);  // ตรวจสอบทุก 60 วินาที
 
   // เชื่อมต่อ MQTT
-  reconnectMQTT();
+   // จัดสรรพื้นที่ให้ BearSSL ในหน่วยความจำ IRAM
+  HeapSelectIram ephemeral;
+  mqttClient.connect(mqtt_server, mqtt_port);
   mqtt.setKeepAlive(60);
 }
 
@@ -671,7 +678,7 @@ void sendMqttResponse(const String& command, JsonDocument& response) {
   }
   
   // ตรวจสอบขนาดอีกครั้งก่อนส่ง
-  if (jsonStr.length() > 1500) {  // ตั้งค่าตามขนาดที่คิดว่าปลอดภัย
+  if (jsonStr.length() > 400) {  // ตั้งค่าตามขนาดที่คิดว่าปลอดภัย
     Serial.println("Error: Message too large for MQTT buffer");
     return;
   }
@@ -698,6 +705,38 @@ void sendMqttResponse(const String& command, JsonDocument& response) {
   }
 }
 
+void __reconnectMQTT() {
+  char clientId[12];
+  snprintf(clientId, sizeof(clientId), "ESP%d", DEVICE_ID);
+
+  int freeHeap = ESP.getFreeHeap();
+  Serial.printf("Free heap before MQTT connect: %d\n", freeHeap);
+
+  // ถ้า heap น้อยเกินไป ให้รีสตาร์ท
+  if (freeHeap < 5000) {
+    Serial.println("Low memory, restarting...");
+    stopTimers();
+    ESP.restart();
+    return;
+  }
+  
+  // ลองเชื่อมต่อแบบง่ายที่สุด - ไม่มี will message, ไม่มี credentials
+  if (mqtt.connect(clientId)) {
+    Serial.println("Connected!");
+    char topic[32];
+    snprintf(topic, sizeof(topic), "%s%d", mqtt_topic_cmd, DEVICE_ID);
+    mqtt.subscribe(topic);
+    return;
+  }
+  
+  Serial.print("Failed, rc=");
+  Serial.println(mqtt.state());
+  
+  // เพิ่ม delay และ yield เพื่อให้ watchdog ทำงานได้
+  delay(10);
+  yield();
+}
+
 void reconnectMQTT() {
   // ไม่ใช้ bool เพื่อลดการสร้างตัวแปรบน stack
   char client_id[20]; // ลดขนาดลงเพื่อประหยัดหน่วยความจำ
@@ -712,6 +751,16 @@ void reconnectMQTT() {
   }
   
   lastAttempt = currentMillis;
+
+  int freeHeap = ESP.getFreeHeap();
+  Serial.printf("Free heap before MQTT connect: %d\n", freeHeap);
+  // ถ้า heap น้อยเกินไป ให้รีสตาร์ท
+  if (freeHeap < 5000) {
+    Serial.println("Low memory, restarting...");
+    stopTimers();
+    ESP.restart();
+    return;
+  }
   
   // ตรวจสอบว่ายังเชื่อมต่ออยู่หรือไม่
   if (mqtt.connected()) {
