@@ -40,6 +40,22 @@ const char *password = "xxxx";   // แทนที่ด้วยรหัส�
 String authorizedChatIds[MAX_ALLOWED_CHATIDS] = {"xxxxxx", "xxxxxx", "", "", ""};
 int numAuthorizedChatIds = 2; // จำนวน Chat IDs ที่อนุญาต (เริ่มต้นที่ 2)
 
+// ในโค้ด handleNewMessages เมื่อส่งคำสั่ง MQTT
+// ให้บันทึกข้อมูลว่าใคร (chat_id) ส่งคำสั่งอะไรไปยังอุปกรณ์ไหน
+
+// ตัวอย่างโครงสร้างข้อมูลสำหรับเก็บข้อมูลคำสั่งล่าสุด
+#define MAX_COMMAND_HISTORY 20
+
+struct CommandInfo {
+  String deviceId;
+  String command;
+  String chatId;
+  unsigned long timestamp;
+};
+
+CommandInfo commandHistory[MAX_COMMAND_HISTORY];
+int commandHistoryIndex = 0;
+
 
 const char* mqtt_broker = "i31286ee.ala.eu-central-1.emqxsl.com";
 const int mqtt_port = 8883;
