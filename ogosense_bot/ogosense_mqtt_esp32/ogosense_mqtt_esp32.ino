@@ -106,6 +106,7 @@ void setup() {
 
   Serial.println();
   Serial.println("เริ่มต้นระบบ ESP32 Telegram MQTT Bridge");
+  Serial.println("เวอร์ชัน: 2.0.3 - SSL only with Auto Restart");
 
   // เริ่มต้น EEPROM
   EEPROM.begin(EEPROM_SIZE);
@@ -124,44 +125,90 @@ void setup() {
   
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("ไม่สามารถเชื่อมต่อ WiFi ได้ ทำการรีสตาร์ท...");
+    delay(1000);
     ESP.restart();
   }
+  
+  Serial.println("\nเชื่อมต่อ WiFi สำเร็จ");
+  Serial.print("IP: ");
+  Serial.println(WiFi.localIP());
   
   // ซิงค์เวลา
   syncTime();
 
-  // ตั้งค่า SSL Certificates สำหรับ Telegram และ MQTT
+  // ตั้งค่า SSL Certificates
+  Serial.println("กำลังตั้งค่า SSL certificates...");
   telegramClient.setCACert(TELEGRAM_CERTIFICATE_ROOT);  // สำหรับ Telegram
+  mqttClient.setCACert(ca_cert);                       // สำหรับ MQTT
   
-  mqttClient.setCACert(ca_cert);      // สำหรับ MQTT
+  // แสดงข้อมูลการตั้งค่า MQTT
+  Serial.println("\n====== ข้อมูลการเชื่อมต่อ MQTT ======");
+  Serial.print("MQTT Broker: ");
+  Serial.println(mqtt_broker);
+  Serial.print("MQTT Port: ");
+  Serial.println(mqtt_port);
+  Serial.print("MQTT Username: ");
+  Serial.println(mqtt_username);
+  Serial.print("Certificate length: ");
+  Serial.println(strlen(ca_cert));
+  Serial.println("====================================\n");
 
-  // ตั้งค่า MQTT และเพิ่มการตรวจสอบการเชื่อมต่อ
+  // ตั้งค่า MQTT
   mqtt.setServer(mqtt_broker, mqtt_port);
   mqtt.setCallback(mqttCallback);
   mqtt.setBufferSize(1024);
   
   // เพิ่มการลอง connect MQTT หลายๆ ครั้ง
   bool mqttConnected = false;
-  for (int i = 0; i < 5; i++) {
+  int mqttRetries = 0;
+  const int maxMqttRetries = 5;
+  
+  Serial.println("เริ่มพยายามเชื่อมต่อ MQTT แบบ SSL...");
+  
+  while (!mqttConnected && mqttRetries < maxMqttRetries) {
+    mqttRetries++;
+    Serial.print("พยายามเชื่อมต่อ MQTT ครั้งที่ ");
+    Serial.print(mqttRetries);
+    Serial.print("/");
+    Serial.print(maxMqttRetries);
+    Serial.println("...");
+    
     if (connectToMQTT()) {
       mqttConnected = true;
       break;
     }
+    
+    // รอ 5 วินาทีก่อนลองใหม่
     delay(5000);
   }
   
+  // หากเชื่อมต่อ MQTT ไม่สำเร็จหลังจากลองหลายครั้ง ให้รีสตาร์ท ESP32
   if (!mqttConnected) {
-    Serial.println("ไม่สามารถเชื่อมต่อ MQTT ได้หลังจากพยายามหลายครั้ง");
-    // ไม่ต้อง restart ที่นี่ เพื่อให้โปรแกรมทำงานต่อไปและลองเชื่อมต่อ MQTT ในลูป loop()
+    Serial.println("ไม่สามารถเชื่อมต่อ MQTT ได้หลังจากพยายาม " + String(maxMqttRetries) + " ครั้ง");
+    Serial.println("ทำการรีสตาร์ท ESP32 ในอีก 5 วินาที...");
+    delay(5000);
+    ESP.restart();
   }
   
+  // ถ้าเชื่อมต่อสำเร็จ
+  Serial.println("เชื่อมต่อ MQTT สำเร็จ!");
   mqtt.subscribe(mqtt_topic_resp, 1);
+  Serial.println("Subscribe topic: " + String(mqtt_topic_resp));
 
   bot_lasttime = millis();
   blinker.attach(1.0, blink);  // เรียก blink() ทุก 1 วินาที
 }
 
 void loop() {
+  static int failedMqttReconnectCounter = 0; // ตัวนับการพยายามเชื่อมต่อ MQTT ที่ล้มเหลว
+  static int failedWifiReconnectCounter = 0; // ตัวนับการพยายามเชื่อมต่อ WiFi ที่ล้มเหลว
+  static unsigned long lastReconnectAttempt = 0;
+  static unsigned long lastRestartTime = 0;     // เวลาที่รีสตาร์ทล่าสุด
+  unsigned long currentTime = millis();
+  
+  // ป้องกันการรีสตาร์ทถี่เกินไป
+  bool canRestart = (currentTime - lastRestartTime > 300000); // อนุญาตให้รีสตาร์ทได้ทุก 5 นาที
+  
   // ตรวจสอบการเชื่อมต่อ WiFi
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi ขาดการเชื่อมต่อ กำลังเชื่อมต่อใหม่...");
@@ -178,27 +225,77 @@ void loop() {
     
     if (WiFi.status() == WL_CONNECTED) {
       Serial.println("\nเชื่อมต่อ WiFi ใหม่สำเร็จ");
+      failedWifiReconnectCounter = 0; // รีเซ็ตตัวนับเมื่อเชื่อมต่อสำเร็จ
     } else {
       Serial.println("\nการเชื่อมต่อ WiFi ล้มเหลว");
-      delay(5000);
-      // ไม่ต้องรีสตาร์ทเพื่อป้องกันการรีสตาร์ทวนซ้ำๆ
+      
+      // เพิ่มตัวนับความล้มเหลว
+      failedWifiReconnectCounter++;
+      
+      // หากเชื่อมต่อ WiFi ไม่สำเร็จ 3 ครั้งติดต่อกัน ให้รีสตาร์ท
+      if (failedWifiReconnectCounter >= 3 && canRestart) {
+        Serial.println("ล้มเหลวในการเชื่อมต่อ WiFi 3 ครั้งติดต่อกัน ทำการรีสตาร์ทใน 5 วินาที...");
+        delay(5000);
+        lastRestartTime = millis();
+        ESP.restart();
+      }
+      
+      delay(10000); // รอนานขึ้นก่อนลองใหม่
       return; // ข้ามการทำงานรอบนี้
     }
+  } else {
+    // รีเซ็ตตัวนับหากเชื่อมต่อ WiFi สำเร็จ
+    failedWifiReconnectCounter = 0;
   }
-  
-  static unsigned long lastReconnectAttempt = 0;
   
   // ตรวจสอบการเชื่อมต่อ MQTT ทุก 5 วินาที
   if (!mqtt.connected()) {
-    unsigned long now = millis();
-    if (now - lastReconnectAttempt > 5000) {
-      lastReconnectAttempt = now;
+    if (currentTime - lastReconnectAttempt > 5000) {
+      lastReconnectAttempt = currentTime;
       Serial.println("การเชื่อมต่อ MQTT ขาดหาย พยายามเชื่อมต่อใหม่...");
       
       // ลองเชื่อมต่อกับ MQTT broker
       if (connectToMQTT()) {
         Serial.println("เชื่อมต่อ MQTT ใหม่สำเร็จ");
-        lastReconnectAttempt = 0;
+        mqtt.subscribe(mqtt_topic_resp, 1); // Re-subscribe topic
+        failedMqttReconnectCounter = 0; // รีเซ็ตตัวนับเมื่อเชื่อมต่อสำเร็จ
+      } else {
+        // เพิ่มตัวนับความล้มเหลว
+        failedMqttReconnectCounter++;
+        
+        // หากเชื่อมต่อ MQTT ไม่สำเร็จ 10 ครั้งติดต่อกัน ให้รีสตาร์ท
+        if (failedMqttReconnectCounter >= 10 && canRestart) {
+          Serial.println("ล้มเหลวในการเชื่อมต่อ MQTT 10 ครั้งติดต่อกัน ทำการรีสตาร์ทใน 5 วินาที...");
+          
+          // แสดงข้อมูลเพิ่มเติมก่อนรีสตาร์ท
+          Serial.println("\n====== ข้อมูลการเชื่อมต่อก่อนรีสตาร์ท ======");
+          Serial.print("WiFi status: ");
+          Serial.println(WiFi.status() == WL_CONNECTED ? "Connected" : "Disconnected");
+          Serial.print("IP address: ");
+          Serial.println(WiFi.localIP());
+          Serial.print("MQTT error state: ");
+          Serial.println(mqtt.state());
+          printMQTTError(mqtt.state());
+          Serial.println("========================================\n");
+          
+          delay(5000);
+          lastRestartTime = millis();
+          ESP.restart();
+        }
+        
+        // แสดงข้อความว่าจะรีสตาร์ทเมื่อใด
+        if (failedMqttReconnectCounter > 0) {
+          Serial.print("ล้มเหลวในการเชื่อมต่อ MQTT ");
+          Serial.print(failedMqttReconnectCounter);
+          Serial.print("/10 ครั้ง");
+          if (failedMqttReconnectCounter >= 10) {
+            if (!canRestart) {
+              Serial.println(" (รอเวลารีสตาร์ท)");
+            }
+          } else {
+            Serial.println();
+          }
+        }
       }
     }
   } else {
@@ -206,17 +303,41 @@ void loop() {
   }
   
   // ตรวจสอบข้อความใหม่จาก Telegram
-  if (millis() > bot_lasttime + BOT_MTBS) {
+  if (currentTime > bot_lasttime + BOT_MTBS) {
     int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
     while (numNewMessages) {
       Serial.println("Got Telegram messages: " + String(numNewMessages));
       handleNewMessages(numNewMessages);
       numNewMessages = bot.getUpdates(bot.last_message_received + 1);
     }
-    bot_lasttime = millis();
+    bot_lasttime = currentTime;
   }
 
   delay(10); // เพิ่มเวลา delay เพื่อลดการใช้ CPU
+}
+
+bool retrySyncTime() {
+  Serial.println("พยายามซิงค์เวลาใหม่อีกครั้ง...");
+  
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov"); // ใช้ NTP server หลายตัว
+  
+  int retries = 0;
+  time_t now = time(nullptr);
+  
+  while (now < 8 * 3600 * 2 && retries < 15) {
+    delay(1000);
+    Serial.print(".");
+    now = time(nullptr);
+    retries++;
+  }
+  
+  if (now < 8 * 3600 * 2) {
+    Serial.println("\nไม่สามารถซิงค์เวลาได้");
+    return false;
+  } else {
+    Serial.println("\nซิงค์เวลาสำเร็จ: " + String(ctime(&now)));
+    return true;
+  }
 }
 
 void connectToWiFi() {
@@ -319,8 +440,7 @@ void printMQTTError(int error) {
 }
 
 bool connectToMQTT() {
-  // String client_id = "esp32-client-" + String(WiFi.macAddress()); // REDACTED
-  String client_id = "esp32-telegram-broker-" + String(DEVICE_ID); // REDACTED
+  String client_id = "esp32-telegram-broker-" + String(DEVICE_ID);
   Serial.print("เชื่อมต่อ MQTT (client_id: ");
   Serial.print(client_id);
   Serial.print(")... ");
@@ -331,12 +451,32 @@ bool connectToMQTT() {
     return false;
   }
 
-  // ทำการเชื่อมต่อ MQTT
-  if (mqtt.connect(client_id.c_str(), mqtt_username, mqtt_password)) {
+  // สร้าง Last Will and Testament (LWT) message
+  // เมื่อ ESP32 หลุดการเชื่อมต่อ จะส่งข้อความนี้ไปยัง topic ที่กำหนด
+  String willTopic = "ogosense/status/" + String(DEVICE_ID);
+  String willMessage = "{\"device_id\":" + String(DEVICE_ID) + ",\"status\":\"offline\",\"timestamp\":" + String(millis()) + "}";
+  bool willRetain = true;
+  int willQos = 1;
+
+  bool success = false;
+  
+  // ทดลองเชื่อมต่อด้วย username/password และกำหนด LWT
+  if (strlen(mqtt_username) > 0) {
+    success = mqtt.connect(client_id.c_str(), mqtt_username, mqtt_password, 
+                          willTopic.c_str(), willQos, willRetain, willMessage.c_str());
+  } else {
+    // ทดลองเชื่อมต่อโดยไม่ใช้ username/password แต่ยังกำหนด LWT
+    success = mqtt.connect(client_id.c_str(), 
+                          willTopic.c_str(), willQos, willRetain, willMessage.c_str());
+  }
+
+  if (success) {
     Serial.println("สำเร็จ");
-    // เมื่อเชื่อมต่อสำเร็จ ต้อง subscribe topic ใหม่อีกครั้ง
-    mqtt.subscribe(mqtt_topic_resp, 1);
-    Serial.println("Subscribe topic: " + String(mqtt_topic_resp));
+    
+    // ส่งข้อความ online status เมื่อเชื่อมต่อสำเร็จ
+    String statusMessage = "{\"device_id\":" + String(DEVICE_ID) + ",\"status\":\"online\",\"timestamp\":" + String(millis()) + "}";
+    mqtt.publish(willTopic.c_str(), statusMessage.c_str(), willRetain);
+    
     return true;
   } else {
     Serial.print("ล้มเหลว state=");
