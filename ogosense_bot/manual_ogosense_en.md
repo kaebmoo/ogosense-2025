@@ -29,7 +29,7 @@ This ID must then be added to the **Telegram MQTT Bridge (ESP32)** system, which
 
 The system supports a **maximum of 5 Telegram user IDs**. Two IDs are hardcoded into the board, which means you can add **up to 3 additional users** who will be able to monitor or control the device.
 
-![](Screenshot 2568-04-09 at 14.52.01.png)
+![](Screenshot%202568-04-09%20at%2014.52.01.png)
 
 ---
 
