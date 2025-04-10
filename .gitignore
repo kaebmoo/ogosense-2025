@@ -5,3 +5,5 @@ ogosense_bot/ogosense_2025/ogosense.h
 *.h
 ogosense_bot/emqxsl-ca.crt
 /ogosense_bot/ogosense_mqtt_esp8266/build
+*.crt
+ogosense_bot/ogosense_mqtt_python-example/.env
