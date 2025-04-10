@@ -7,3 +7,6 @@ ogosense_bot/emqxsl-ca.crt
 /ogosense_bot/ogosense_mqtt_esp8266/build
 *.crt
 ogosense_bot/ogosense_mqtt_python-example/.env
+authorized_chatids.pkl
+ogosense_bot/ogosense_mqtt_python/.env
+*.pyc
