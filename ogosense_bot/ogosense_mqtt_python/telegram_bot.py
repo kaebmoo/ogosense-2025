@@ -72,40 +72,56 @@ class TelegramBot:
         self.application = None
         self.bot = None
     
+    # ปรับปรุงเมธอด start ใน TelegramBot
     async def start(self):
-        """เริ่มการทำงานของ Telegram Bot"""
-        # สร้าง Bot และ Application
-        self.application = Application.builder().token(self.token).build()
-        self.bot = self.application.bot
+        """เริ่มการทำงานของ Telegram Bot
         
-        # ลงทะเบียนคำสั่ง
-        self._register_commands()
-        
-        logger.info("กำลังเริ่ม Telegram Bot...")
-        
-        # เริ่มการ polling เพื่อรับข้อความจาก Telegram
-        # ใช้แบบ non-blocking เพื่อให้โปรแกรมทำงานต่อได้
-        await self.application.initialize()
-        await self.application.start()
-        await self.application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
-        
-        # แสดงข้อความว่า Bot เริ่มทำงานแล้ว
-        logger.info("Telegram Bot เริ่มทำงานแล้ว")
-    
+        Returns:
+            bool: True ถ้าเริ่มสำเร็จ, False ถ้าไม่สำเร็จ
+        """
+        try:
+            # สร้าง Bot และ Application
+            self.application = Application.builder().token(self.token).build()
+            self.bot = self.application.bot
+            
+            # ทดสอบการเชื่อมต่อก่อน
+            await self.bot.get_me()
+            
+            # ลงทะเบียนคำสั่ง
+            self._register_commands()
+            
+            logger.info("กำลังเริ่ม Telegram Bot...")
+            
+            # เริ่มการ polling เพื่อรับข้อความจาก Telegram
+            await self.application.initialize()
+            await self.application.start()
+            await self.application.updater.start_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+            
+            # แสดงข้อความว่า Bot เริ่มทำงานแล้ว
+            logger.info("Telegram Bot เริ่มทำงานแล้ว")
+            return True
+        except Exception as e:
+            logger.error(f"ไม่สามารถเริ่ม Telegram Bot ได้: {e}")
+            return False
+
+    # ปรับปรุงเมธอด stop ใน TelegramBot
     async def stop(self):
         """หยุดการทำงานของ Telegram Bot"""
         if self.application:
-            logger.info("กำลังหยุด Telegram Bot...")
-            
-            # หยุดการ polling ก่อน
-            if self.application.updater.running:
-                await self.application.updater.stop()
-            
-            # หยุดการทำงานของ Application
-            await self.application.stop()
-            await self.application.shutdown()
-            
-            logger.info("Telegram Bot หยุดทำงานแล้ว")
+            try:
+                logger.info("กำลังหยุด Telegram Bot...")
+                
+                # หยุดการ polling ก่อน
+                if hasattr(self.application, 'updater') and self.application.updater.running:
+                    await self.application.updater.stop()
+                
+                # หยุดการทำงานของ Application
+                await self.application.stop()
+                await self.application.shutdown()
+                
+                logger.info("Telegram Bot หยุดทำงานแล้ว")
+            except Exception as e:
+                logger.error(f"เกิดข้อผิดพลาดขณะหยุด Telegram Bot: {e}")
     
     async def send_message(self, chat_id: str, text: str):
         """ส่งข้อความไปยัง Telegram"""

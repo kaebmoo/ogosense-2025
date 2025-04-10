@@ -42,7 +42,14 @@ class MQTTClient:
     def _setup_mqtt_client(self):
         """ตั้งค่า MQTT Client"""
         client_id = f"python-telegram-broker-{self.device_id}-{int(time.time())}"
-        self.client = mqtt.Client(client_id=client_id, protocol=mqtt.MQTTv5)
+        
+        # เลือกใช้โปรโตคอลตามเวอร์ชัน
+        try:
+            # ลอง MQTTv5 ก่อน
+            self.client = mqtt.Client(client_id=client_id, protocol=mqtt.MQTTv5)
+        except Exception as e:
+            logger.warning(f"ไม่สามารถใช้ MQTTv5 ได้: {e}, กำลังใช้ MQTTv311 แทน")
+            self.client = mqtt.Client(client_id=client_id, protocol=mqtt.MQTTv311)
         
         # ตั้งค่า TLS ถ้ามี CA Cert
         if os.path.exists(self.ca_cert_path):
@@ -94,10 +101,11 @@ class MQTTClient:
             self._connected = False
             self._print_mqtt_error(rc)
     
-    def _on_disconnect(self, client, userdata, rc):
+    # แก้ไขเมธอด _on_disconnect ในคลาส MQTTClient ใน mqtt_client.py
+    def _on_disconnect(self, client, userdata, rc, properties=None):
         """ฟังก์ชันที่ทำงานเมื่อขาดการเชื่อมต่อ MQTT"""
         logger.warning(f"ขาดการเชื่อมต่อ MQTT (รหัส {rc})")
-        self._connected = False
+        self._connected = False 
     
     def _on_message(self, client, userdata, msg):
         """ฟังก์ชันที่ทำงานเมื่อได้รับข้อความ MQTT"""
@@ -147,20 +155,47 @@ class MQTTClient:
     
     def reconnect(self) -> bool:
         """เชื่อมต่อใหม่ไปยัง MQTT Broker
-        
+    
         Returns:
             bool: True ถ้าเชื่อมต่อสำเร็จ, False ถ้าเชื่อมต่อล้มเหลว
         """
         try:
-            self.client.reconnect()
-            # รอการเชื่อมต่อสักครู่
-            time.sleep(2)
-            return self.is_connected()
+            # หยุด loop เดิมก่อน (ถ้ากำลังทำงานอยู่)
+            if self.client and self.client._thread is not None:
+                try:
+                    logger.debug("กำลังหยุด MQTT client loop ก่อนเชื่อมต่อใหม่")
+                    self.client.loop_stop()
+                except Exception as e:
+                    logger.warning(f"ไม่สามารถหยุด loop เดิมได้: {e}")
+            
+            logger.info(f"กำลังเชื่อมต่อใหม่ไปยัง MQTT broker: {self.broker}:{self.port}")
+            
+            # ลองใช้ reconnect ก่อน
+            try:
+                self.client.reconnect()
+                self.client.loop_start()
+                # รอการเชื่อมต่อสักครู่
+                time.sleep(2)
+                return self.is_connected()
+            except Exception as reconnect_error:
+                logger.warning(f"ไม่สามารถใช้ reconnect ได้: {reconnect_error}")
+                
+                # ถ้า reconnect ไม่ได้ ให้สร้าง client ใหม่และเชื่อมต่อใหม่
+                logger.info("กำลังสร้าง MQTT client ใหม่...")
+                self._setup_mqtt_client()
+                try:
+                    self.client.connect(self.broker, self.port, keepalive=60)
+                    self.client.loop_start()
+                    # รอการเชื่อมต่อสักครู่
+                    time.sleep(2)
+                    return self.is_connected()
+                except Exception as connect_error:
+                    logger.error(f"ไม่สามารถเชื่อมต่อใหม่กับ MQTT broker ได้: {connect_error}")
+                    return False
+        
         except Exception as e:
-            logger.error(f"ไม่สามารถเชื่อมต่อใหม่กับ MQTT broker ได้: {e}")
-            # ลองสร้าง client ใหม่และเชื่อมต่อใหม่
-            self._setup_mqtt_client()
-            return self.connect()
+            logger.error(f"เกิดข้อผิดพลาดในการเชื่อมต่อใหม่: {e}")
+            return False
     
     def disconnect(self):
         """ยกเลิกการเชื่อมต่อจาก MQTT Broker"""

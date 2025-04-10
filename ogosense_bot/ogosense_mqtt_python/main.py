@@ -167,6 +167,7 @@ class MQTTTelegramBridge:
             import traceback
             logger.error(traceback.format_exc())
     
+    # ใน main.py - ที่เมธอด start ของ MQTTTelegramBridge
     async def start(self):
         """เริ่มการทำงานของ bridge"""
         self.is_running = True
@@ -179,9 +180,7 @@ class MQTTTelegramBridge:
         # เริ่มการเชื่อมต่อ MQTT
         logger.info("กำลังเชื่อมต่อกับ MQTT Broker...")
         if not self.mqtt_client.connect():
-            logger.error("ไม่สามารถเชื่อมต่อ MQTT ได้ กำลังปิดโปรแกรม...")
-            await self.shutdown()
-            return
+            logger.error("ไม่สามารถเชื่อมต่อ MQTT ได้ จะลองเชื่อมต่อใหม่ในลูป...")
         
         logger.info("เริ่มต้น Telegram Bot...")
         # เริ่ม Telegram Bot
@@ -190,6 +189,9 @@ class MQTTTelegramBridge:
         # เริ่ม task สำหรับประมวลผลคิวข้อความ
         message_processor = asyncio.create_task(self._process_message_queue())
         
+        # เริ่ม task สำหรับตรวจสอบการเชื่อมต่อ
+        connection_checker = asyncio.create_task(self._check_connections())
+        
         try:
             # แสดงข้อความเมื่อเริ่มทำงาน
             logger.info("ระบบพร้อมทำงานแล้ว - รอรับคำสั่งจาก Telegram...")
@@ -197,24 +199,79 @@ class MQTTTelegramBridge:
             # รอจนกว่าโปรแกรมจะถูกสั่งให้ปิด
             while self.is_running:
                 await asyncio.sleep(1)
-                
-                # ตรวจสอบการเชื่อมต่อ MQTT
-                if not self.mqtt_client.is_connected():
-                    logger.warning("การเชื่อมต่อ MQTT ขาดหาย กำลังเชื่อมต่อใหม่...")
-                    self.mqtt_client.reconnect()
         
         except Exception as e:
             logger.error(f"เกิดข้อผิดพลาดในการทำงานหลัก: {e}")
         finally:
-            # ยกเลิก task ประมวลผลคิวข้อความ
-            if message_processor and not message_processor.done():
-                message_processor.cancel()
-                try:
-                    await message_processor
-                except asyncio.CancelledError:
-                    pass
+            # ยกเลิก tasks
+            for task in [message_processor, connection_checker]:
+                if task and not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
             
             await self.shutdown()
+
+    # เพิ่มเมธอดใหม่สำหรับตรวจสอบและรักษาการเชื่อมต่อ
+    # ในเมธอด _check_connections ของคลาส MQTTTelegramBridge
+    async def _check_connections(self):
+        """ตรวจสอบและรักษาการเชื่อมต่อทั้งหมด"""
+        logger.info("เริ่มตรวจสอบการเชื่อมต่อ")
+        reconnect_delay = 5
+        max_reconnect_delay = 300
+        
+        while self.is_running:
+            try:
+                # ตรวจสอบการเชื่อมต่อ MQTT
+                if not self.mqtt_client.is_connected():
+                    logger.warning(f"MQTT ขาดการเชื่อมต่อ กำลังเชื่อมต่อใหม่...")
+                    
+                    # ทดสอบเชื่อมต่อใหม่ด้วย exponential backoff
+                    if self.mqtt_client.reconnect():
+                        logger.info("เชื่อมต่อ MQTT ใหม่สำเร็จ")
+                        reconnect_delay = 5  # รีเซ็ตเวลารอ
+                    else:
+                        logger.error(f"ไม่สามารถเชื่อมต่อ MQTT ใหม่ได้ จะลองอีกครั้งใน {reconnect_delay} วินาที")
+                        reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+                
+                # ตรวจสอบการเชื่อมต่อ Telegram
+                telegram_connected = False
+                try:
+                    # ทดสอบการเชื่อมต่อ Telegram
+                    if self.telegram_bot.bot:
+                        me = await self.telegram_bot.bot.get_me()
+                        if me:
+                            telegram_connected = True
+                            logger.debug("การเชื่อมต่อ Telegram ปกติ")
+                except Exception as e:
+                    logger.error(f"การเชื่อมต่อ Telegram มีปัญหา: {e}")
+                
+                # หากไม่สามารถเชื่อมต่อ Telegram ได้ ลองรีสตาร์ท
+                if not telegram_connected:
+                    logger.warning("กำลังพยายามรีสตาร์ท Telegram Bot...")
+                    try:
+                        # หยุด bot ก่อน
+                        await self.telegram_bot.stop()
+                        await asyncio.sleep(2)
+                        
+                        # เริ่ม bot ใหม่
+                        success = await self.telegram_bot.start()
+                        
+                        # ตรวจสอบว่าเริ่มสำเร็จจริงๆ
+                        if success:
+                            logger.info("รีสตาร์ท Telegram Bot สำเร็จ")
+                        else:
+                            logger.error("รีสตาร์ท Telegram Bot ไม่สำเร็จ")
+                    except Exception as restart_error:
+                        logger.error(f"เกิดข้อผิดพลาดขณะรีสตาร์ท Telegram Bot: {restart_error}")
+            
+            except Exception as e:
+                logger.error(f"เกิดข้อผิดพลาดในการตรวจสอบการเชื่อมต่อ: {e}")
+            
+            # รอก่อนตรวจสอบรอบถัดไป
+            await asyncio.sleep(30)
     
     async def shutdown(self):
         """หยุดการทำงานของ bridge"""
@@ -232,27 +289,48 @@ class MQTTTelegramBridge:
         
         logger.info("ปิดโปรแกรมเรียบร้อย")
 
+    # ปรับปรุงเมธอด _process_message_queue
     async def _process_message_queue(self):
         """ประมวลผลคิวข้อความ Telegram"""
         logger.info("เริ่มการประมวลผลคิวข้อความ Telegram")
+        
+        # จำนวนความพยายามสูงสุดในการส่งข้อความ
+        max_retries = 3
+        
         while self.is_running:
             try:
                 # รอข้อความจากคิว
                 chat_id, message = await self.telegram_message_queue.get()
                 
-                # ส่งข้อความไปยัง Telegram
-                await self.telegram_bot.send_message(chat_id, message)
-                logger.info(f"ส่งข้อความจากคิวไปยัง Telegram: {message[:100]}...")
+                # ส่งข้อความไปยัง Telegram พร้อมลอง retry
+                success = False
+                retry_count = 0
+                last_error = None
+                
+                while not success and retry_count < max_retries:
+                    try:
+                        await self.telegram_bot.send_message(chat_id, message)
+                        success = True
+                        logger.info(f"ส่งข้อความจากคิวไปยัง Telegram: {message[:100]}...")
+                    except Exception as e:
+                        retry_count += 1
+                        last_error = e
+                        logger.warning(f"ไม่สามารถส่งข้อความไปยัง Telegram ได้ (ครั้งที่ {retry_count}/{max_retries}): {e}")
+                        await asyncio.sleep(2 * retry_count)  # รอนานขึ้นในแต่ละครั้ง
+                
+                if not success:
+                    logger.error(f"ไม่สามารถส่งข้อความไปยัง Telegram ได้หลังจากลอง {max_retries} ครั้ง: {last_error}")
                 
                 # บอกว่าได้ประมวลผลข้อความนี้แล้ว
                 self.telegram_message_queue.task_done()
+                
             except asyncio.CancelledError:
                 # task ถูกยกเลิก
                 logger.info("Task ประมวลผลคิวข้อความถูกยกเลิก")
                 break
             except Exception as e:
                 logger.error(f"เกิดข้อผิดพลาดในการประมวลผลคิวข้อความ: {e}")
-                await asyncio.sleep(1)  # ป้องกันการวนลูปเร็วเกินไปในกรณีที่เกิดข้อผิดพลาด
+                await asyncio.sleep(5)  # รอสักครู่ก่อนลองใหม่
 
 async def main():
     """ฟังก์ชันหลักของโปรแกรม"""
