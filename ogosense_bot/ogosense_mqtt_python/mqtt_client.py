@@ -34,7 +34,7 @@ class MQTTClient:
         self.message_callback = message_callback
         self.client = None
         self._connected = False
-        self.ca_cert_path = "ogosense_bot/ogosense_mqtt_python/emqxsl-ca.crt"
+        self.ca_cert_path = "/etc/secrets/emqxsl-ca.crt"
         
         # สร้าง MQTT Client
         self._setup_mqtt_client()
