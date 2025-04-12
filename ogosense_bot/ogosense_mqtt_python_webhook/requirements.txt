@@ -1,3 +1,4 @@
 python-telegram-bot
 paho-mqtt
 python-dotenv
+aiohttp

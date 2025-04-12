@@ -185,19 +185,44 @@ async def main():
         # เริ่ม webhook server
         logger.info(f"กำลังเริ่ม Telegram Bot ในโหมด webhook ที่ port {webhook_port}")
         
-        # เริ่ม webhook
-        await application.bot.set_webhook(url=f"{webhook_url}/{bot_token}")
-        await application.run_webhook(
-            listen=webhook_host,
-            port=webhook_port,
-            webhook_url=f"{webhook_url}/{bot_token}",
-            url_path=bot_token,
-            drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES
-        )
+        # แทนที่จะใช้ run_webhook() ซึ่งบล็อกโปรแกรม
+        # ให้ใช้วิธีการตั้งค่า webhook และเริ่ม webhook server แยกกัน
+        await application.initialize()
+        await application.start()
         
+        # ตั้งค่า webhook URL
+        await application.bot.set_webhook(url=f"{webhook_url}/{bot_token}")
+        
+        # สร้าง webhook server แบบแยก
+        from aiohttp import web
+        
+        async def webhook_handler(request):
+            # รับข้อมูลจาก request
+            update_data = await request.json()
+            # ส่งข้อมูลให้ application ประมวลผล
+            await application.process_update(Update.de_json(update_data, application.bot))
+            # ตอบกลับ request
+            return web.Response(text="OK")
+        
+        # สร้าง web app
+        app = web.Application()
+        app.router.add_post(f"/{bot_token}", webhook_handler)
+        
+        # เริ่ม web server
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, webhook_host, webhook_port)
+        await site.start()
+        
+        logger.info(f"Webhook server เริ่มทำงานที่ {webhook_host}:{webhook_port}")
+        
+        # รอจนกว่าโปรแกรมจะถูกปิด
+        while True:
+            await asyncio.sleep(3600)  # รอ 1 ชั่วโมงแล้วเช็คใหม่
+            
     except Exception as e:
         logger.error(f"เกิดข้อผิดพลาดในการทำงาน webhook: {e}")
+        
     finally:
         # Cleanup
         if message_processor:
