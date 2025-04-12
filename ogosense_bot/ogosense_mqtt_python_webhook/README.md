@@ -61,7 +61,7 @@ MQTT_TOPIC_RESP=ogosense/resp/#
 BOT_TOKEN=your_telegram_bot_token
 
 # Device Configuration
-DEVICE_ID=12345  # Default device ID for the bridge
+DEVICE_ID=12345  # Device ID for the bridge
 
 # Authorized Chat IDs (default administrators)
 DEFAULT_CHATID_1=12345678
