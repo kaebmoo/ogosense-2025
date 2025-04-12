@@ -61,11 +61,11 @@ MQTT_TOPIC_RESP=ogosense/resp/#
 BOT_TOKEN=your_telegram_bot_token
 
 # Device Configuration
-DEVICE_ID=REDACTED  # Default device ID for the bridge
+DEVICE_ID=12345  # Default device ID for the bridge
 
 # Authorized Chat IDs (default administrators)
-DEFAULT_CHATID_1=REDACTED
-DEFAULT_CHATID_2=REDACTED
+DEFAULT_CHATID_1=12345678
+DEFAULT_CHATID_2=87654321
 
 # Storage Settings
 STORAGE_FILE=authorized_chatids.pkl
