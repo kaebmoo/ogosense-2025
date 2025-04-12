@@ -10,3 +10,4 @@ ogosense_bot/ogosense_mqtt_python-example/.env
 authorized_chatids.pkl
 ogosense_bot/ogosense_mqtt_python/.env
 *.pyc
+ogosense_bot/ogosense_mqtt_python_webhook/.env
