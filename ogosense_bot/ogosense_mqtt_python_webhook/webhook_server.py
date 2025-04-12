@@ -88,6 +88,9 @@ logger = logging.getLogger(__name__)
 # ตัวแปรเก็บ config ระบบ
 MAX_ALLOWED_CHATIDS = 5
 
+# ตัวแปรสำหรับเก็บเวลาล่าสุดที่มีการ ping
+last_ping_time = time.time()
+
 async def main():
     """ฟังก์ชันหลักของโปรแกรม webhook"""
     # แสดงข้อมูลโปรแกรม
@@ -203,10 +206,31 @@ async def main():
             await application.process_update(Update.de_json(update_data, application.bot))
             # ตอบกลับ request
             return web.Response(text="OK")
+            
+        # เพิ่ม health check endpoint
+        async def health_check_handler(request):
+            global last_ping_time
+            last_ping_time = time.time()
+            logger.debug(f"Health check ping ที่เวลา: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+            return web.Response(text="OK", status=200)
+            
+        # สร้าง monitor task สำหรับแสดงสถานะ active
+        async def status_monitor():
+            while True:
+                current_time = time.time()
+                uptime = current_time - last_ping_time
+                logger.info(f"สถานะระบบ: Active, เวลาตั้งแต่ ping ล่าสุด: {uptime:.2f} วินาที")
+                await asyncio.sleep(3600)  # แสดงสถานะทุก 1 ชั่วโมง
+                
+        # เริ่ม status monitor task
+        status_monitor_task = asyncio.create_task(status_monitor())
         
         # สร้าง web app
         app = web.Application()
         app.router.add_post(f"/{bot_token}", webhook_handler)
+        app.router.add_get("/health", health_check_handler)  # เพิ่ม health check endpoint
+        app.router.add_get("/ping", health_check_handler)    # endpoint สำรอง
+        app.router.add_get("/", health_check_handler)        # endpoint สำหรับหน้าแรก
         
         # เริ่ม web server
         runner = web.AppRunner(app)
@@ -215,6 +239,7 @@ async def main():
         await site.start()
         
         logger.info(f"Webhook server เริ่มทำงานที่ {webhook_host}:{webhook_port}")
+        logger.info(f"Health check endpoint พร้อมใช้งานที่ /health, /ping และ /")
         
         # รอจนกว่าโปรแกรมจะถูกปิด
         while True:
@@ -229,6 +254,13 @@ async def main():
             message_processor.cancel()
             try:
                 await message_processor
+            except asyncio.CancelledError:
+                pass
+                
+        if 'status_monitor_task' in locals() and status_monitor_task:
+            status_monitor_task.cancel()
+            try:
+                await status_monitor_task
             except asyncio.CancelledError:
                 pass
         
