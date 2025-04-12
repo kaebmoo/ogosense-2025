@@ -6,9 +6,10 @@ import time
 import json
 import logging
 import ssl
-from typing import Callable, Optional, Dict, Any
 import paho.mqtt.client as mqtt
-
+from typing import Callable, Optional, Dict, Any
+from dotenv import load_dotenv
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ class MQTTClient:
         self.message_callback = message_callback
         self.client = None
         self._connected = False
-        self.ca_cert_path = "/etc/secrets/emqxsl-ca.crt"
+        self.ca_cert_path = os.getenv("CA_CERT_PATH", "emqxsl-ca.crt")
         
         # สร้าง MQTT Client
         self._setup_mqtt_client()

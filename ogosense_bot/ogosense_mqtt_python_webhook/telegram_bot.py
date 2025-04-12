@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Telegram Bot module สำหรับการเชื่อมต่อกับ Telegram"""
 
-import os
 import json
 import time
 import logging
@@ -92,35 +91,11 @@ class TelegramBot:
             self._register_commands()
             
             logger.info("กำลังเริ่ม Telegram Bot...")
-
-            # ตรวจสอบโหมดการทำงาน (webhook หรือ polling)
-            webhook_url = os.getenv('WEBHOOK_URL')
-
-            if webhook_url:
-                # ใช้โหมด webhook สำหรับ production (render.com)
-                webhook_host = os.getenv('WEBHOOK_HOST', '0.0.0.0')
-                webhook_port = int(os.getenv('PORT', 8080))
-                
-                logger.info(f"กำลังเริ่ม Telegram Bot ในโหมด webhook ที่ port {webhook_port}")
-                
-                # ใช้ run_webhook ซึ่งจะจัดการทั้ง initialize, start และ set_webhook
-                await self.application.run_webhook(
-                    listen=webhook_host,
-                    port=webhook_port,
-                    webhook_url=f"{webhook_url}/{self.token}",
-                    url_path=self.token,
-                    drop_pending_updates=True,
-                    allowed_updates=Update.ALL_TYPES
-                )
-            else:
-                # ใช้โหมด polling สำหรับ development (local)
-                logger.info("กำลังเริ่ม Telegram Bot ในโหมด polling...")
-                
-                # run_polling จะจัดการทั้ง initialize และ start
-                await self.application.run_polling(
-                    allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True
-                )
+            
+            # เริ่มการ polling เพื่อรับข้อความจาก Telegram
+            await self.application.initialize()
+            await self.application.start()
+            await self.application.updater.start_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
             
             # แสดงข้อความว่า Bot เริ่มทำงานแล้ว
             logger.info("Telegram Bot เริ่มทำงานแล้ว")
@@ -136,7 +111,12 @@ class TelegramBot:
             try:
                 logger.info("กำลังหยุด Telegram Bot...")
                 
-                # application.shutdown() จะจัดการยกเลิก webhook ให้โดยอัตโนมัติ
+                # หยุดการ polling ก่อน
+                if hasattr(self.application, 'updater') and self.application.updater.running:
+                    await self.application.updater.stop()
+                
+                # หยุดการทำงานของ Application
+                await self.application.stop()
                 await self.application.shutdown()
                 
                 logger.info("Telegram Bot หยุดทำงานแล้ว")
@@ -187,7 +167,31 @@ class TelegramBot:
     
     async def _error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE):
         """จัดการข้อผิดพลาดที่เกิดขึ้นในระหว่างการประมวลผลอัปเดต"""
-        logger.error(f"เกิดข้อผิดพลาด: {context.error}")
+        # ดึงข้อผิดพลาดจาก context
+        err = context.error
+        logger.error(f"เกิดข้อผิดพลาด: {err}")
+        
+        # ตรวจสอบกรณี NoneType error ที่เกิดจากการแก้ไขข้อความ
+        if isinstance(err, AttributeError) and "'NoneType' object has no attribute 'reply_text'" in str(err):
+            # ตรวจสอบว่ามีการแก้ไขข้อความหรือไม่
+            if update and hasattr(update, 'edited_message') and update.edited_message:
+                try:
+                    await update.edited_message.reply_text(
+                        "ระบบไม่รองรับการแก้ไขข้อความ กรุณาส่งคำสั่งใหม่แทนการแก้ไข"
+                    )
+                    return
+                except Exception as e:
+                    logger.error(f"ไม่สามารถส่งข้อความตอบกลับได้: {e}")
+        
+        # พยายามส่งข้อความแจ้งผู้ใช้ทั่วไปถ้าทำได้
+        try:
+            if update and hasattr(update, 'effective_chat') and update.effective_chat:
+                await self.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="เกิดข้อผิดพลาดในการประมวลผลคำสั่ง กรุณาส่งคำสั่งใหม่อีกครั้ง"
+                )
+        except Exception as e:
+            logger.error(f"ไม่สามารถส่งข้อความแจ้งเตือนได้: {e}")
     
     def _is_authorized(self, chat_id: str) -> bool:
         """ตรวจสอบว่า Chat ID ได้รับอนุญาตหรือไม่"""
@@ -245,11 +249,13 @@ class TelegramBot:
             logger.warning(f"ผู้ใช้ที่ไม่ได้รับอนุญาต Chat ID: {chat_id} พยายามใช้คำสั่ง /start")
             return
         
-        welcome_msg = f"ยินดีต้อนรับสู่ Telegram MQTT Bridge คุณ{from_name}\n"
+        welcome_msg = f"ยินดีต้อนรับสู่ Telegram MQTT Bridge คุณ {from_name}\n"
         welcome_msg += "คุณสามารถใช้คำสั่งต่างๆ เพื่อควบคุมอุปกรณ์ได้\n"
         welcome_msg += "พิมพ์ /help เพื่อดูรายการคำสั่งทั้งหมด"
         
         await update.message.reply_text(welcome_msg)
+    
+    # ส่วนที่เหลือยังคงเหมือนเดิม...
     
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """คำสั่ง /help - แสดงคำแนะนำ"""

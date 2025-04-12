@@ -39,12 +39,48 @@ from dotenv import load_dotenv
 from telegram_bot import TelegramBot
 from mqtt_client import MQTTClient
 from storage import Storage, CommandHistory
+import logging.config
 
-# เซตอัพการบันทึกล็อก
+# คอนฟิกูเรชัน logging
+LOGGING_CONFIG = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'standard': {
+            'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'level': 'INFO',
+            'formatter': 'standard',
+            'stream': 'ext://sys.stdout'
+        },
+    },
+    'loggers': {
+        # โมดูลของคุณเอง
+        'mqtt_client': {'level': 'INFO'},
+        'telegram_bot': {'level': 'INFO'}, 
+        'storage': {'level': 'INFO'},
+        'main': {'level': 'INFO'},
+        # โมดูลจากไลบรารีภายนอก
+        'httpx': {'level': 'WARNING'},
+        'telegram': {'level': 'WARNING'},
+        'telegram.ext': {'level': 'WARNING'},
+        # ตั้งค่าสำหรับ root logger
+        '': {'level': 'WARNING', 'handlers': ['console']}
+    }
+}
+
+# ใช้คอนฟิกนี้แทน basicConfig
+logging.config.dictConfig(LOGGING_CONFIG)
+
+'''# เซตอัพการบันทึกล็อก
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO  # เปลี่ยนเป็น DEBUG เพื่อดูข้อมูลเพิ่มเติม
-)
+)'''
 logger = logging.getLogger(__name__)
 
 # โหลดค่าคอนฟิกูเรชันจากไฟล์ .env

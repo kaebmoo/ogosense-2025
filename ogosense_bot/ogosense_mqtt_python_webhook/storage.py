@@ -6,6 +6,8 @@ import time
 import pickle
 import logging
 from typing import List, Dict, Any, Optional
+from dotenv import load_dotenv
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +20,8 @@ class Storage:
             max_chat_ids: จำนวนสูงสุดของ Chat IDs ที่สามารถเก็บได้
             default_chat_ids: รายการเริ่มต้นของ Chat IDs
         """
-        self.storage_file = "authorized_chatids.pkl"
+        # ดึงค่าจาก environment variable หรือใช้ค่าเริ่มต้น
+        self.storage_file = os.getenv("STORAGE_FILE", "authorized_chatids.pkl")
         self.max_chat_ids = max_chat_ids
         self.authorized_chatids = []
         self.num_authorized_chatids = 0

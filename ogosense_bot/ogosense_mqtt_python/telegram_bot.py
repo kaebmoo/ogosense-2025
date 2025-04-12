@@ -167,7 +167,31 @@ class TelegramBot:
     
     async def _error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE):
         """จัดการข้อผิดพลาดที่เกิดขึ้นในระหว่างการประมวลผลอัปเดต"""
-        logger.error(f"เกิดข้อผิดพลาด: {context.error}")
+        # ดึงข้อผิดพลาดจาก context
+        err = context.error
+        logger.error(f"เกิดข้อผิดพลาด: {err}")
+        
+        # ตรวจสอบกรณี NoneType error ที่เกิดจากการแก้ไขข้อความ
+        if isinstance(err, AttributeError) and "'NoneType' object has no attribute 'reply_text'" in str(err):
+            # ตรวจสอบว่ามีการแก้ไขข้อความหรือไม่
+            if update and hasattr(update, 'edited_message') and update.edited_message:
+                try:
+                    await update.edited_message.reply_text(
+                        "ระบบไม่รองรับการแก้ไขข้อความ กรุณาส่งคำสั่งใหม่แทนการแก้ไข"
+                    )
+                    return
+                except Exception as e:
+                    logger.error(f"ไม่สามารถส่งข้อความตอบกลับได้: {e}")
+        
+        # พยายามส่งข้อความแจ้งผู้ใช้ทั่วไปถ้าทำได้
+        try:
+            if update and hasattr(update, 'effective_chat') and update.effective_chat:
+                await self.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="เกิดข้อผิดพลาดในการประมวลผลคำสั่ง กรุณาส่งคำสั่งใหม่อีกครั้ง"
+                )
+        except Exception as e:
+            logger.error(f"ไม่สามารถส่งข้อความแจ้งเตือนได้: {e}")
     
     def _is_authorized(self, chat_id: str) -> bool:
         """ตรวจสอบว่า Chat ID ได้รับอนุญาตหรือไม่"""
@@ -225,11 +249,13 @@ class TelegramBot:
             logger.warning(f"ผู้ใช้ที่ไม่ได้รับอนุญาต Chat ID: {chat_id} พยายามใช้คำสั่ง /start")
             return
         
-        welcome_msg = f"ยินดีต้อนรับสู่ Telegram MQTT Bridge คุณ{from_name}\n"
+        welcome_msg = f"ยินดีต้อนรับสู่ Telegram MQTT Bridge คุณ {from_name}\n"
         welcome_msg += "คุณสามารถใช้คำสั่งต่างๆ เพื่อควบคุมอุปกรณ์ได้\n"
         welcome_msg += "พิมพ์ /help เพื่อดูรายการคำสั่งทั้งหมด"
         
         await update.message.reply_text(welcome_msg)
+    
+    # ส่วนที่เหลือยังคงเหมือนเดิม...
     
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """คำสั่ง /help - แสดงคำแนะนำ"""
