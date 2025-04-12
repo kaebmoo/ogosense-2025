@@ -225,7 +225,7 @@ class TelegramBot:
             logger.warning(f"ผู้ใช้ที่ไม่ได้รับอนุญาต Chat ID: {chat_id} พยายามใช้คำสั่ง /start")
             return
         
-        welcome_msg = f"ยินดีต้อนรับสู่ Telegram MQTT Bridge คุณ{from_name}\n"
+        welcome_msg = f"ยินดีต้อนรับสู่ Telegram MQTT Bridge คุณ {from_name}\n"
         welcome_msg += "คุณสามารถใช้คำสั่งต่างๆ เพื่อควบคุมอุปกรณ์ได้\n"
         welcome_msg += "พิมพ์ /help เพื่อดูรายการคำสั่งทั้งหมด"
         
