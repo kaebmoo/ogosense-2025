@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Telegram Bot module สำหรับการเชื่อมต่อกับ Telegram"""
 
+import os
 import json
 import time
 import logging
@@ -91,11 +92,35 @@ class TelegramBot:
             self._register_commands()
             
             logger.info("กำลังเริ่ม Telegram Bot...")
-            
-            # เริ่มการ polling เพื่อรับข้อความจาก Telegram
-            await self.application.initialize()
-            await self.application.start()
-            await self.application.updater.start_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+
+            # ตรวจสอบโหมดการทำงาน (webhook หรือ polling)
+            webhook_url = os.getenv('WEBHOOK_URL')
+
+            if webhook_url:
+                # ใช้โหมด webhook สำหรับ production (render.com)
+                webhook_host = os.getenv('WEBHOOK_HOST', '0.0.0.0')
+                webhook_port = int(os.getenv('PORT', 8080))
+                
+                logger.info(f"กำลังเริ่ม Telegram Bot ในโหมด webhook ที่ port {webhook_port}")
+                
+                # ใช้ run_webhook ซึ่งจะจัดการทั้ง initialize, start และ set_webhook
+                await self.application.run_webhook(
+                    listen=webhook_host,
+                    port=webhook_port,
+                    webhook_url=f"{webhook_url}/{self.token}",
+                    url_path=self.token,
+                    drop_pending_updates=True,
+                    allowed_updates=Update.ALL_TYPES
+                )
+            else:
+                # ใช้โหมด polling สำหรับ development (local)
+                logger.info("กำลังเริ่ม Telegram Bot ในโหมด polling...")
+                
+                # run_polling จะจัดการทั้ง initialize และ start
+                await self.application.run_polling(
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=True
+                )
             
             # แสดงข้อความว่า Bot เริ่มทำงานแล้ว
             logger.info("Telegram Bot เริ่มทำงานแล้ว")
@@ -111,12 +136,7 @@ class TelegramBot:
             try:
                 logger.info("กำลังหยุด Telegram Bot...")
                 
-                # หยุดการ polling ก่อน
-                if hasattr(self.application, 'updater') and self.application.updater.running:
-                    await self.application.updater.stop()
-                
-                # หยุดการทำงานของ Application
-                await self.application.stop()
+                # application.shutdown() จะจัดการยกเลิก webhook ให้โดยอัตโนมัติ
                 await self.application.shutdown()
                 
                 logger.info("Telegram Bot หยุดทำงานแล้ว")

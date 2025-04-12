@@ -6,8 +6,9 @@ import time
 import json
 import logging
 import ssl
-import paho.mqtt.client as mqtt
 from typing import Callable, Optional, Dict, Any
+import paho.mqtt.client as mqtt
+
 
 logger = logging.getLogger(__name__)
 

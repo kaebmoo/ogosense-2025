@@ -182,9 +182,8 @@ class MQTTTelegramBridge:
         if not self.mqtt_client.connect():
             logger.error("ไม่สามารถเชื่อมต่อ MQTT ได้ จะลองเชื่อมต่อใหม่ในลูป...")
         
-        logger.info("เริ่มต้น Telegram Bot...")
+        
         # เริ่ม Telegram Bot
-        await self.telegram_bot.start()
         
         # เริ่ม task สำหรับประมวลผลคิวข้อความ
         message_processor = asyncio.create_task(self._process_message_queue())
@@ -193,12 +192,23 @@ class MQTTTelegramBridge:
         connection_checker = asyncio.create_task(self._check_connections())
         
         try:
+            # ตรวจสอบโหมดการทำงาน
+            webhook_url = os.getenv('WEBHOOK_URL')
+            
+            # เริ่ม Telegram Bot
+            # run_webhook และ run_polling จะบล็อกโปรแกรมในโหมด webhook
+            # แต่จะไม่บล็อกในโหมด polling
+            await self.telegram_bot.start()
+            logger.info("เริ่มต้น Telegram Bot...")
+
             # แสดงข้อความเมื่อเริ่มทำงาน
             logger.info("ระบบพร้อมทำงานแล้ว - รอรับคำสั่งจาก Telegram...")
             
-            # รอจนกว่าโปรแกรมจะถูกสั่งให้ปิด
-            while self.is_running:
-                await asyncio.sleep(1)
+            # ในโหมด webhook, โปรแกรมจะถูกบล็อกที่ self.telegram_bot.start()
+            # ในโหมด polling, เราต้องรอจนกว่าโปรแกรมจะถูกสั่งให้ปิด
+            if not webhook_url:
+                while self.is_running:
+                    await asyncio.sleep(1)
         
         except Exception as e:
             logger.error(f"เกิดข้อผิดพลาดในการทำงานหลัก: {e}")
