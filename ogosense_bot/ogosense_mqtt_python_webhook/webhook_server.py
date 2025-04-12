@@ -164,6 +164,9 @@ async def main():
         device_id,
         mqtt_topic_cmd
     )
+    # กำหนดค่า application ให้กับ telegram_bot
+    telegram_bot.application = application
+    telegram_bot.bot = application.bot
     
     # ลงทะเบียนคำสั่งต่างๆ
     telegram_bot._register_commands()
