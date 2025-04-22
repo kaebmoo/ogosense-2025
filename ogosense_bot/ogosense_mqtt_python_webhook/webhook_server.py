@@ -310,8 +310,13 @@ async def process_message_queue(queue, telegram_bot):
             logger.error(f"เกิดข้อผิดพลาดในการประมวลผลคิวข้อความ: {e}")
             await asyncio.sleep(5)  # รอสักครู่ก่อนลองใหม่
 
+# สร้างตัวแปรสำหรับเก็บข้อความล่าสุด
+message_cache = {}
+
 def on_mqtt_message(client, topic, payload):
     """ฟังก์ชันที่ทำงานเมื่อได้รับข้อความ MQTT"""
+    global message_cache
+    
     try:
         logger.debug(f"ได้รับข้อความ MQTT - Topic: {topic}, Payload: {payload}")
         
@@ -326,6 +331,23 @@ def on_mqtt_message(client, topic, payload):
             except json.JSONDecodeError:
                 logger.error(f"ไม่สามารถแปลงข้อความ JSON ได้: {payload}")
                 return
+            
+            # สร้างคีย์เพื่อเช็คข้อความซ้ำ (ใช้ทั้ง topic + timestamp + command เป็นคีย์)
+            timestamp = data.get("timestamp", 0)
+            command = data.get("command", "")
+            cache_key = f"{topic}:{command}:{timestamp}"
+            
+            # ตรวจสอบว่าข้อความนี้เคยได้รับแล้วหรือไม่
+            if cache_key in message_cache:
+                logger.debug(f"ข้อความซ้ำถูกละเว้น: {cache_key}")
+                return
+            
+            # เก็บข้อความนี้ในแคช
+            message_cache[cache_key] = time.time()
+            
+            # ทำความสะอาดแคช ลบรายการที่เก่าเกิน 60 วินาที
+            current_time = time.time()
+            message_cache = {k: v for k, v in message_cache.items() if current_time - v < 60}
             
             # ตรวจสอบว่ามี device_id จาก payload ด้วยหรือไม่
             if "device_id" in data:

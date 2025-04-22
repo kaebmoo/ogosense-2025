@@ -132,6 +132,9 @@ unsigned long ota_progress_millis = 0;
 const unsigned long onPeriod = 60L * 60L * 1000L;       // ON relay period minute * second * milli second
 const unsigned long standbyPeriod = 300L * 1000L;       // delay start timer for relay
 
+unsigned int thingSpeakInterval = DEFAULT_THINGSPEAK_INTERVAL; // เวลาส่งข้อมูลไป ThingSpeak (นาที)
+int thingSpeakTimerId = -1; // เก็บ ID ของ timer
+
 Timer t_relay, t_delayStart, t_checkFirmware;         // timer for ON period and delay start
 Timer t_relay2, t_delayStart2;
 Timer t_sendDatatoThinkSpeak;
@@ -188,6 +191,7 @@ void printConfig();
 bool isNumeric(const String& str);
 void processCommand(StaticJsonDocument<1024>& doc);
 void sendMqttResponse(const String& command, JsonDocument& response);
+void updateThingSpeakInterval(unsigned int newInterval);
 
 // EEPROM functions
 void eeWriteInt(int pos, int val);
@@ -265,8 +269,13 @@ void setup() {
   #endif
   
   t_readSensor.attach(5, setReadSensorFlag);  // 5 seconds  // อ่านค่า sensor ทุก 5 วินาที
-  t_sendDatatoThinkSpeak.every(60L * 1000L, sendDataToThingSpeak);  // ส่งข้อมูลไป ThingSpeak ทุก 1 นาที
-
+  // t_sendDatatoThinkSpeak.every(60L * 1000L, sendDataToThingSpeak);  // ส่งข้อมูลไป ThingSpeak ทุก 1 นาที
+  // ตั้งค่า timer สำหรับส่งข้อมูลไป ThingSpeak
+  thingSpeakTimerId = t_sendDatatoThinkSpeak.every(thingSpeakInterval * 60L * 1000L, sendDataToThingSpeak);
+  Serial.print("ThingSpeak interval set to ");
+  Serial.print(thingSpeakInterval);
+  Serial.println(" minute(s)");
+  
   // ตั้งค่า watchdog
   watchdogTicker.attach(60, checkSystem);  // ตรวจสอบทุก 60 วินาที
 
@@ -610,6 +619,27 @@ void processCommand(StaticJsonDocument<1024>& doc) {
       response["success"] = false;
       response["message"] = "Missing api_key parameter";
     }
+  }
+  else if (command == "setinterval") {
+    if (doc.containsKey("interval")) {
+      int interval = doc["interval"].as<int>();
+      if (interval >= 1 && interval <= 60) {
+        updateThingSpeakInterval(interval);
+        
+        response["data"]["interval"] = thingSpeakInterval;
+        response["message"] = "ThingSpeak interval updated";
+      } else {
+        response["success"] = false;
+        response["message"] = "Interval must be between 1-60 minutes";
+      }
+    } else {
+      response["success"] = false;
+      response["message"] = "Missing interval parameter";
+    }
+  }
+  else if (command == "getinterval") {
+    response["data"]["interval"] = thingSpeakInterval;
+    response["message"] = "Current ThingSpeak interval: " + String(thingSpeakInterval) + " minute(s)";
   }
   else if (command == "info") {
     if (doc.containsKey("secret")) {
@@ -1388,6 +1418,33 @@ void stopTimers() {
   }
 }
 
+// เพิ่มฟังก์ชันสำหรับปรับเวลาส่งข้อมูล ThingSpeak
+void updateThingSpeakInterval(unsigned int newInterval) {
+  // ตรวจสอบว่าค่าอยู่ในช่วงที่กำหนด
+  if (newInterval < 1) newInterval = 1;
+  if (newInterval > 60) newInterval = 60;
+  
+  // หยุด timer เดิม
+  if (thingSpeakTimerId != -1) {
+    t_sendDatatoThinkSpeak.stop(thingSpeakTimerId);
+  }
+  
+  // ตั้งค่าใหม่
+  thingSpeakInterval = newInterval;
+  
+  // เริ่ม timer ใหม่
+  thingSpeakTimerId = t_sendDatatoThinkSpeak.every(thingSpeakInterval * 60L * 1000L, sendDataToThingSpeak);
+  
+  // บันทึกค่าลง EEPROM
+  EEPROM.begin(EEPROM_SIZE);
+  eeWriteInt(EEPROM_ADDR_THINGSPEAK_INTERVAL, thingSpeakInterval);
+  EEPROM.end();
+  
+  Serial.print("ThingSpeak interval updated to ");
+  Serial.print(thingSpeakInterval);
+  Serial.println(" minutes");
+}
+
 int readSensorData() 
 {
   if (sht30.get() == 0) {
@@ -1429,6 +1486,7 @@ void printConfig()
   Serial.printf("MOISTURE:        %d (%s)\n", MOISTURE,
     (MOISTURE == 1) ? "Moisture mode" : "Dehumidifier mode");
 
+  Serial.printf("ThingSpeak Interval: %d minute(s)\n", thingSpeakInterval);
   Serial.printf("Write API Key:   %s\n", writeAPIKey);
   Serial.printf("Read  API Key:   %s\n", readAPIKey);
   Serial.printf("Channel ID:      %lu\n", channelID);
@@ -1437,6 +1495,7 @@ void printConfig()
 }
 
 
+// แก้ไขฟังก์ชัน saveConfig() เพื่อบันทึกค่าเวลาส่งข้อมูล ThingSpeak
 void saveConfig() {
   EEPROM.begin(EEPROM_SIZE);
 
@@ -1448,6 +1507,7 @@ void saveConfig() {
   eeWriteInt(EEPROM_ADDR_OPTIONS,  options);
   eeWriteInt(EEPROM_ADDR_COOL,     COOL);
   eeWriteInt(EEPROM_ADDR_MOISTURE, MOISTURE);
+  eeWriteInt(EEPROM_ADDR_THINGSPEAK_INTERVAL, thingSpeakInterval);
 
   writeEEPROM(writeAPIKey, EEPROM_ADDR_WRITE_APIKEY, 16);
   writeEEPROM(readAPIKey,  EEPROM_ADDR_READ_APIKEY, 16);
@@ -1477,6 +1537,7 @@ void getConfig() {
     options  = OPTIONS;
     COOL     = COOL_MODE;
     MOISTURE = MOISTURE_MODE;
+    thingSpeakInterval = DEFAULT_THINGSPEAK_INTERVAL;
 
     strncpy(writeAPIKey,  writeAPIKey, sizeof(writeAPIKey));
     strncpy(readAPIKey,   readAPIKey, sizeof(readAPIKey));
@@ -1496,6 +1557,14 @@ void getConfig() {
     options  = eeGetInt(EEPROM_ADDR_OPTIONS);
     COOL     = eeGetInt(EEPROM_ADDR_COOL);
     MOISTURE = eeGetInt(EEPROM_ADDR_MOISTURE);
+    
+    // อ่านค่าเวลาส่งข้อมูล ThingSpeak
+    int savedInterval = eeGetInt(EEPROM_ADDR_THINGSPEAK_INTERVAL);
+    if (savedInterval >= 1 && savedInterval <= 60) {
+      thingSpeakInterval = savedInterval;
+    } else {
+      thingSpeakInterval = DEFAULT_THINGSPEAK_INTERVAL;
+    }
 
     readEEPROM(writeAPIKey, EEPROM_ADDR_WRITE_APIKEY, 16);
     readEEPROM(readAPIKey,  EEPROM_ADDR_READ_APIKEY, 16);
@@ -1511,7 +1580,9 @@ void getConfig() {
   if (options < 0 || options > 4) options = OPTIONS;
   if (COOL != 0 && COOL != 1) COOL = COOL_MODE;
   if (MOISTURE != 0 && MOISTURE != 1) MOISTURE = MOISTURE_MODE;
+  if (thingSpeakInterval < 1 || thingSpeakInterval > 60) thingSpeakInterval = DEFAULT_THINGSPEAK_INTERVAL;
 }
+
 
 void eeWriteInt(int pos, int val) {
     byte* p = (byte*) &val;
